@@ -80,6 +80,13 @@ The installer puts the `raea` command under `~/.raea`, links it into `~/.local/b
 work. Run it again to update. The engine is free and needs no account. Tarballs and checksums are on the
 [releases page](https://github.com/shinyobjectz/raea/releases).
 
+Linux release builds also package an x86_64 AppImage of the engine command and
+attach it and its SHA256 checksum beside the release archives.
+Make it executable with `chmod +x raea-*.AppImage`, then run
+`./raea-VERSION-linux-x86_64.AppImage --help` or pass the usual `raea` arguments.
+See [the AppImage release recipe](tools/release/README.md#linux-appimage) for build
+instructions, runtime requirements and running without FUSE.
+
 On Windows 10 or 11, in PowerShell:
 
 ```powershell
