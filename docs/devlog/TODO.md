@@ -20,11 +20,11 @@ means completed work, not an upstream merge or policy approval.
 ## Phase 2: AppImage release PR (`development`)
 
 - [x] Step 1. Review and validate the AppImage changes and documentation.
-- [ ] Step 2. Commit each changed file separately, with a rationale in its commit message.
-- [ ] Step 3. Push `development` to `origin`.
-- [ ] Step 4. Open the upstream PR and record the chosen base and any fallback.
-- [ ] Step 5. Include evidence, limitations and suggested repository improvements in the PR.
-- [ ] Step 6. Record the PR URL and validation results in this board.
+- [x] Step 2. Commit each changed file separately, with a rationale in its commit message.
+- [x] Step 3. Push `development` to `origin`.
+- [x] Step 4. Open the upstream PR and record the chosen base and any fallback.
+- [x] Step 5. Include evidence, limitations and suggested repository improvements in the PR.
+- [x] Step 6. Record the PR URL and validation results in this board.
 
 ## Phase 3: Project and agent guide PR (`development-2`)
 
@@ -68,5 +68,7 @@ review; do not invent private reporting addresses or enforcement contacts.
   Improvements to these are proposals, not claims that the files are missing.
 - Missing at baseline: root `AGENTS.md`, root `CLAUDE.md`, a code of conduct,
   issue templates and a pull request template.
-- AppImage PR: pending.
+- AppImage PR: [shinyobjectz/raea#226](https://github.com/shinyobjectz/raea/pull/226),
+  `Sarverott:development` → upstream `main`. Eight initial commits each changed
+  one file; later helperboard-only commits record progress.
 - Project/agent guide PR: pending.
