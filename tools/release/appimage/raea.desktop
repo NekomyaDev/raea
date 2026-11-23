@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=raea
+Comment=Render videos, motion graphics and 3D from React and TypeScript
+Exec=raea
+Icon=raea
+Terminal=true
+Categories=AudioVideo;Video;
