@@ -28,15 +28,15 @@ means completed work, not an upstream merge or policy approval.
 
 ## Phase 3: Project and agent guide PR (`development-2`)
 
-- [ ] Step 1. Create `development-2` from the original `main`, carrying this helperboard.
-- [ ] Step 2. Inspect the source, architecture, CLI, SDK, feature specifications and checks.
-- [ ] Step 3. Write a comprehensive `AGENTS.md` describing the project, execution flow,
+- [x] Step 1. Create `development-2` from the original `main`, carrying this helperboard.
+- [x] Step 2. Inspect the source, architecture, CLI, SDK, feature specifications and checks.
+- [x] Step 3. Write a comprehensive `AGENTS.md` describing the project, execution flow,
       available features, source boundaries, build/check commands and contribution workflow.
-- [ ] Step 4. Include a clearly optional, direct BOS reference for agents and maintainers
+- [x] Step 4. Include a clearly optional, direct BOS reference for agents and maintainers
       to evaluate; do not imply BOS has already been adopted by upstream.
-- [ ] Step 5. Add `CLAUDE.md` as a pointer to `AGENTS.md`, without duplicating guidance.
-- [ ] Step 6. Validate documentation, commit files separately and push the branch to `origin`.
-- [ ] Step 7. Open another upstream PR, linking it to the AppImage PR and carrying this board.
+- [x] Step 5. Add `CLAUDE.md` as a pointer to `AGENTS.md`, without duplicating guidance.
+- [x] Step 6. Validate documentation, commit files separately and push the branch to `origin`.
+- [x] Step 7. Open another upstream PR, linking it to the AppImage PR and carrying this board.
 
 ## Phase 4: Community and maintenance follow-ups
 
@@ -46,15 +46,31 @@ board, and says “According to the suggestion mentioned in PR #NUMBER” with a
 link to the actual upstream PR. Scope and policy remain subject to maintainer
 review; do not invent private reporting addresses or enforcement contacts.
 
-- [ ] Step 1. Propose a code of conduct with an explicit, verified reporting route.
-- [ ] Step 2. Improve existing contribution guidance where inspection finds gaps.
-- [ ] Step 3. Add issue templates appropriate to bugs and feature proposals.
-- [ ] Step 4. Improve the existing security notice without inventing support guarantees.
-- [ ] Step 5. Add a PR template and other useful GitHub guidance justified by the repository.
-- [ ] Step 6. Confirm whether these remaining follow-ups should be implemented in this
-      session or kept as tracked work after the agent-guide PR.
+- [x] Step 1. Propose a code of conduct with an explicit, verified reporting route.
+- [x] Step 2. Improve existing contribution guidance where inspection finds gaps.
+- [x] Step 3. Add issue templates appropriate to bugs and feature proposals.
+- [x] Step 4. Improve the existing security notice without inventing support guarantees.
+- [x] Step 5. Add a PR template and other useful GitHub guidance justified by the repository.
+- [x] Step 6. Confirm whether these remaining follow-ups should be implemented in this
+      session or kept as tracked work after the agent-guide PR: the contributor
+      explicitly requested implementation now, in separate PRs.
 
 ## Evidence and PR register
+
+| Branch in `Sarverott/shinyobjectz___raea` | Scope | Upstream PR |
+| --- | --- | --- |
+| `development` | Linux AppImage script, launcher, release checks, workflow and docs | [#226](https://github.com/shinyobjectz/raea/pull/226) |
+| `development-2` | Project/feature/contributor guide and Claude import | [#227](https://github.com/shinyobjectz/raea/pull/227) |
+| `development-3` | Code of conduct and reporting/moderation guidance | [#228](https://github.com/shinyobjectz/raea/pull/228) |
+| `development-4` | Expanded existing contribution guide | [#229](https://github.com/shinyobjectz/raea/pull/229) |
+| `development-5` | Bug/feature issue forms and chooser links | [#230](https://github.com/shinyobjectz/raea/pull/230) |
+| `development-6` | Expanded existing security notice | [#231](https://github.com/shinyobjectz/raea/pull/231) |
+| `development-7` | PR template | [#232](https://github.com/shinyobjectz/raea/pull/232) |
+
+All seven PRs were opened against `shinyobjectz/raea:main`. Each follow-up links
+to the corresponding suggestion in PR #226. Their scope is independent; the
+same final helperboard is carried in each branch to avoid divergent plan files.
+Opening these proposals does not merge them or adopt their policies upstream.
 
 - Baseline: local `main` and `origin/main` were `a4898b76` when this series began.
 - AppImage: shell syntax, desktop entry, Actions lint and an integration fixture
@@ -71,4 +87,19 @@ review; do not invent private reporting addresses or enforcement contacts.
 - AppImage PR: [shinyobjectz/raea#226](https://github.com/shinyobjectz/raea/pull/226),
   `Sarverott:development` → upstream `main`. Eight initial commits each changed
   one file; later helperboard-only commits record progress.
-- Project/agent guide PR: pending.
+- Project/agent guide PR: [shinyobjectz/raea#227](https://github.com/shinyobjectz/raea/pull/227),
+  `Sarverott:development-2` → upstream `main`, independently based on `a4898b76`.
+- Guide validation: all relative Markdown links resolve, `CLAUDE.md` contains
+  only `@AGENTS.md`, whitespace and public-content checks pass. The guide is
+  source-backed; no new engine/GPU tests were claimed or run for the docs.
+- Architecture discovery: GitNexus returned no indexed repositories; direct
+  source and current manual inspection supplied the evidence instead.
+- Security route: GitHub's API reported upstream private vulnerability reporting
+  enabled on 2026-11-23. The setting is separate from `SECURITY.md` and can change.
+- Community validation: Markdown links and source references checked; issue-form
+  YAML, field IDs/types, required fields, choices and contact links validated;
+  whitespace and public-guard/Gitleaks checks passed for each branch. GitHub's
+  rendered templates require adoption on the default branch before user testing.
+- Conduct reporting: no separate maintainer inbox is documented. PR #228 uses
+  GitHub's reporting routes, notes availability limits, and leaves any additional
+  private contact to maintainers rather than inventing one.
