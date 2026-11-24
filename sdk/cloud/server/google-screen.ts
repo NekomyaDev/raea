@@ -62,13 +62,15 @@ export async function openScreen(dir: string, url: string): Promise<Screen> {
     kids.push(x)
     if (!(await until(() => existsSync(`/tmp/.X11-unix/X${n}`) || x.exitCode !== null, 10_000)) || x.exitCode !== null) throw new Error("the virtual display didn't start")
     const env = { ...process.env, DISPLAY: `:${n}` }
-    // no sandbox: the box's container has no user namespaces for it; the window is an app window (no tabs or address
+    // no sandbox: the box's container has no user namespaces for it (test-type keeps Chrome from warning about that in
+    // a bar across Google's page; pages can't see either flag); the window is an app window (no tabs or address
     // bar), the whole screen, and keeps its passwords in its profile (no keyring to ask about)
     kids.push(
       spawn(
         bin,
         [
           "--no-sandbox",
+          "--test-type",
           "--disable-gpu",
           "--disable-dev-shm-usage",
           "--no-first-run",
