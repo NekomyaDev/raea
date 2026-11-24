@@ -32,7 +32,7 @@ curl -H "authorization: Bearer $RAEA_CLOUD_TOKEN" localhost:8080/v1/health
 `AGENTS` takes any ids the [ACP registry](https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json)
 lists, several at once: `kimi-code`, `claude-acp`, `codex-acp`, `gemini`, `opencode`, `goose`, ... Each is installed
 from its registry entry (npm at the registry's version, or its Linux archive checked by sha256), and raea's skill is
-installed for it on every start. `RAEA_AGENT` picks the default; a socket can name another (`?agent=`).
+installed for it on every start. A socket names its agent (`?agent=`); `RAEA_AGENT` names one for sockets that don't. With neither, there is no agent: the box never picks one itself.
 `RAEA_AGENT_CMD` runs an agent the registry doesn't list, by its command line.
 
 Signing the agent in:

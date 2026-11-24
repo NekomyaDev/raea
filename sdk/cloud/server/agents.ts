@@ -124,9 +124,12 @@ export function spawnFor(id?: string): Spawn {
   const cmd = process.env.RAEA_AGENT_CMD
   if (cmd && (!want || want === "custom")) return { id: "custom", version: "", command: sh(), args: ["-c", cmd], env: {} }
   const all = installed()
-  // with none named, Claude when it's there (11-24: antigravity-acp sorts first and would have become the default)
-  const s = want ? all.find((a) => a.id === want) : (all.find((a) => a.id === "claude-acp") ?? all[0])
-  if (!s) throw new Error(want ? `${want} isn't installed in this image (installed: ${all.map((a) => a.id).join(", ") || "none"})` : "no agent is installed: build with AGENTS=..., or set RAEA_AGENT_CMD")
+  // no default (11-24, Shane): an agent runs only when it's named, by the request (?agent=) or the box's RAEA_AGENT,
+  // never whichever is installed first, so a run is never on a model nobody picked
+  const ids = all.map((a) => a.id).join(", ") || "none"
+  if (!want) throw new Error(`no agent named: pass ?agent=ID, or set RAEA_AGENT on the box (installed: ${ids})`)
+  const s = all.find((a) => a.id === want)
+  if (!s) throw new Error(`${want} isn't installed in this image (installed: ${ids})`)
   return s
 }
 

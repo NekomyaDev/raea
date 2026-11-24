@@ -5,7 +5,7 @@
 //   await cloud.health()                                  // {raea, agent, agents, workspace}
 //   await cloud.write("card/edit.tsx", source)            // into the workspace
 //   await cloud.run(["render", "edit.tsx", "-o", "card.mp4"], { cwd: "card" })
-//   const s = await cloud.session()                       // the default agent, over ACP
+//   const s = await cloud.session()                       // the agent RAEA_AGENT names, over ACP
 //   await s.prompt("Make card/edit.tsx a 3 s title card that says hello", (u) => console.log(u.sessionUpdate))
 //   const mp4 = await cloud.read("card/card.mp4")
 //   s.close()
@@ -220,7 +220,7 @@ export class RaeaCloud {
     return this.fetch(`/v1/login${agent ? `?agent=${encodeURIComponent(agent)}` : ""}`).then((r) => r.json())
   }
 
-  /** An ACP session with an agent in the workspace (the default agent unless one is named). */
+  /** An ACP session with an agent in the workspace (the one named, else the one the box's RAEA_AGENT names; with neither, the box refuses). */
   async session(o: { agent?: string; cwd?: string; onPermission?: (p: Permission) => string | Promise<string> } = {}): Promise<Session> {
     const work = (this.ws ??= this.health().then((h) => h.workspace))
     const q = new URLSearchParams({ token: this.token, ...(o.agent ? { agent: o.agent } : {}) })
