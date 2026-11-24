@@ -14,8 +14,10 @@
 //   POST /v1/claude-token               a Claude subscription sign-in in a browser: {id, url} (claude-token.ts)
 //   POST /v1/claude-token/ID {code}     the code claude.com showed, in: {token}, handed back once and never kept
 //   POST /v1/claude-token/check {token} one short Claude Code turn on it: {ok, said}
-//   POST /v1/google-token               a Google AI subscription sign-in (Antigravity): {id, url} (google-token.ts)
-//   POST /v1/google-token/ID {address}  the address Google's sign-in landed on, in: {credential, email?}, handed back once
+//   POST /v1/google-token {screen?}     a Google AI subscription sign-in (Antigravity): {id, url, screen} (google-token.ts)
+//   POST /v1/google-token/ID {address?} the address Google's sign-in landed on, in (none when it ran in the box's own
+//                                       browser): {credential, email?}, handed back once, or {pending: true}
+//   WS   /v1/google-token/ID/screen     the box's own browser for that sign-in, over VNC (google-screen.ts)
 //   POST /v1/google-token/check {credential} one short Antigravity turn on it (or a Gemini API key): {ok, said, models}
 //   WS   /v1/acp?agent=ID               one agent process per socket: a text frame is one ACP message to its stdin,
 //                                       each line it prints is one frame back. A caller signing the agent in as one of
@@ -42,7 +44,8 @@ import { installed, spawnFor } from "./agents.ts"
 import { device } from "./gpu.ts"
 import * as jobs from "./jobs.ts"
 import { checkClaude, finishClaudeSignIn, startClaudeSignIn } from "./claude-token.ts"
-import { checkGoogle, finishGoogleSignIn, startGoogleSignIn, unpackCredential } from "./google-token.ts"
+import { checkGoogle, finishGoogleSignIn, screenPort, startGoogleSignIn, unpackCredential } from "./google-token.ts"
+import { connect as tcp } from "node:net"
 import { login, loginState } from "./login.ts"
 import { Outside, resolve, WORK } from "./workspace.ts"
 
@@ -249,7 +252,10 @@ const server = createServer(async (req, res) => {
       const b = JSON.parse((await body(req)).toString("utf8") || "{}") as { token?: unknown }
       return json(res, await checkClaude(childEnv(), String(b.token ?? "")))
     }
-    if (url.pathname === "/v1/google-token" && req.method === "POST") return json(res, await startGoogleSignIn(childEnv()))
+    if (url.pathname === "/v1/google-token" && req.method === "POST") {
+      const b = JSON.parse((await body(req)).toString("utf8") || "{}") as { screen?: unknown }
+      return json(res, await startGoogleSignIn(childEnv(), { screen: b.screen === true }))
+    }
     if (url.pathname === "/v1/google-token/check" && req.method === "POST") {
       const b = JSON.parse((await body(req)).toString("utf8") || "{}") as { credential?: unknown }
       return json(res, await checkGoogle(childEnv(), String(b.credential ?? "")))
@@ -257,7 +263,7 @@ const server = createServer(async (req, res) => {
     const gt = /^\/v1\/google-token\/([0-9a-f]{24})$/.exec(url.pathname)
     if (gt && req.method === "POST") {
       const b = JSON.parse((await body(req)).toString("utf8") || "{}") as { address?: unknown }
-      return json(res, await finishGoogleSignIn(gt[1], String(b.address ?? "")))
+      return json(res, await finishGoogleSignIn(gt[1], typeof b.address === "string" && b.address.trim() ? b.address : undefined))
     }
     const ct = /^\/v1\/claude-token\/([0-9a-f]{24})$/.exec(url.pathname)
     if (ct && req.method === "POST") {
@@ -279,6 +285,20 @@ const server = createServer(async (req, res) => {
 const wss = new WebSocketServer({ noServer: true })
 server.on("upgrade", (req, socket, head) => {
   const url = new URL(req.url ?? "/", "http://raea-cloud")
+  // a Google sign-in's own browser (google-screen.ts): its VNC stream, both ways, as binary frames
+  const gs = /^\/v1\/google-token\/([0-9a-f]{24})\/screen$/.exec(url.pathname)
+  if (gs) {
+    const port = authorized(req, url) ? screenPort(gs[1]) : undefined
+    if (port === undefined) return socket.end(authorized(req, url) ? "HTTP/1.1 404 Not Found\r\n\r\n" : "HTTP/1.1 401 Unauthorized\r\n\r\n")
+    return wss.handleUpgrade(req, socket, head, (ws) => {
+      const vnc = tcp(port, "127.0.0.1")
+      vnc.on("data", (d) => ws.readyState === ws.OPEN && ws.send(d))
+      ws.on("message", (m) => vnc.write(m as Buffer))
+      vnc.on("close", () => ws.close(1000, "the sign-in's screen closed"))
+      vnc.on("error", () => ws.close(1011, "the sign-in's screen failed"))
+      ws.on("close", () => vnc.destroy())
+    })
+  }
   if (url.pathname !== "/v1/acp" || !authorized(req, url)) return socket.end("HTTP/1.1 401 Unauthorized\r\n\r\n")
   let a
   try {

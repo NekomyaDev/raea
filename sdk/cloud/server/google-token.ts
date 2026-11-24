@@ -11,8 +11,13 @@
 // sign-in runs in a folder of its own that's removed when it ends, and one left waiting is stopped after 15 minutes.
 // An agent socket that's given the string (x-raea-agent-env RAEA_GOOGLE_CREDENTIAL, main.ts) has it written into its
 // own GEMINI_HOME before Antigravity starts.
-//   POST /v1/google-token                    {id, url}: a sign-in started, and the link to open
-//   POST /v1/google-token/ID {address}       {credential, email?}: the address the browser landed on; or {error}
+// Where the box has a Chrome (google-screen.ts) the sign-in can run in a browser on the box instead, which the person
+// works from the dashboard: Google's last step then reaches Antigravity's listener on its own, and nothing is pasted.
+//   POST /v1/google-token {screen?}          {id, url, screen}: a sign-in started, the link to open, and whether it
+//                                            runs in the box's own browser (WS /v1/google-token/ID/screen shows it)
+//   POST /v1/google-token/ID {address?}      {credential, email?}: with the address the browser landed on; with none,
+//                                            once the box's browser has finished it ({pending: true} while it hasn't,
+//                                            after waiting up to 25 s); or {error}
 //   POST /v1/google-token/check {credential} {ok, said, models, current}: one short turn on a credential or a Gemini
 //                                            API key (AIza…)
 import { type ChildProcess, spawn } from "node:child_process"
@@ -21,6 +26,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, wr
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { spawnFor } from "./agents.ts"
+import { canShow, openScreen, type Screen } from "./google-screen.ts"
 
 export const GOOGLE_AGENT = process.env.RAEA_GOOGLE_AGENT ?? "antigravity-acp"
 const PREFIX = "agy1:"
@@ -179,6 +185,8 @@ interface SignIn {
   authed: boolean
   failed?: string
   timer: NodeJS.Timeout
+  /** the box's own browser for it, when it runs there */
+  screen?: Screen
 }
 const waiting = new Map<string, SignIn>()
 
@@ -187,6 +195,7 @@ function end(id: string) {
   if (!s) return
   waiting.delete(id)
   clearTimeout(s.timer)
+  s.screen?.stop()
   if (s.agy.child.exitCode === null) s.agy.child.kill("SIGTERM")
   rmSync(s.dir, { recursive: true, force: true })
 }
@@ -195,7 +204,7 @@ const until = async (ok: () => boolean, ms: number) => {
   for (let t = 0; t < ms && !ok(); t += 200) await new Promise((r) => setTimeout(r, 200))
 }
 
-export async function startGoogleSignIn(env: NodeJS.ProcessEnv): Promise<{ id: string; url: string }> {
+export async function startGoogleSignIn(env: NodeJS.ProcessEnv, o: { screen?: boolean } = {}): Promise<{ id: string; url: string; screen: boolean }> {
   const dir = mkdtempSync(path.join(tmpdir(), "google-sign-in-"))
   const home = path.join(dir, ".gemini")
   mkdirSync(home, { mode: 0o700 })
@@ -224,16 +233,37 @@ export async function startGoogleSignIn(env: NodeJS.ProcessEnv): Promise<{ id: s
   }
   s.port = link.port
   s.state = link.state
-  return { id, url: link.url }
+  // the box's own browser, when asked for and there is one; else the person signs in in theirs and pastes
+  if (o.screen && canShow()) {
+    try {
+      s.screen = await openScreen(dir, link.url)
+    } catch (e) {
+      console.error(`raea-cloud: google sign-in ${id.slice(0, 6)}: no screen, the address is pasted instead:`, (e as Error).message)
+    }
+  }
+  return { id, url: link.url, screen: !!s.screen }
 }
 
-export async function finishGoogleSignIn(id: string, address: string): Promise<{ credential: string; email?: string }> {
+/** the VNC port of a sign-in's own browser, while it's up */
+export function screenPort(id: string): number | undefined {
+  const s = waiting.get(id)
+  return s?.screen?.up() ? s.screen.port : undefined
+}
+
+export async function finishGoogleSignIn(id: string, address?: string): Promise<{ credential: string; email?: string } | { pending: true }> {
   const s = waiting.get(id)
   if (!s) throw new Error("that sign-in has ended (they last 15 minutes): start again")
-  const q = landedQuery(address, s)
-  // the browser's visit to Antigravity's listener, made from the box
-  const r = await fetch(`http://127.0.0.1:${s.port}${q}`, { signal: AbortSignal.timeout(30_000) }).catch((e: Error) => ({ ok: false, status: 0, statusText: e.message }))
-  await until(() => s.authed || !!s.failed || s.agy.ended, 60_000)
+  let r: { ok: boolean; status: number; statusText: string } = { ok: true, status: 200, statusText: "" }
+  if (address) {
+    const q = landedQuery(address, s)
+    // the browser's visit to Antigravity's listener, made from the box
+    r = await fetch(`http://127.0.0.1:${s.port}${q}`, { signal: AbortSignal.timeout(30_000) }).catch((e: Error) => ({ ok: false, status: 0, statusText: e.message }))
+    await until(() => s.authed || !!s.failed || s.agy.ended, 60_000)
+  } else {
+    // the box's own browser finishes it: wait a while, and say it's still going if it hasn't (the caller asks again)
+    await until(() => s.authed || !!s.failed || s.agy.ended, 25_000)
+    if (!s.authed && !s.failed && !s.agy.ended) return { pending: true }
+  }
   const credential = s.authed ? packCredential(s.home) : undefined
   const why = s.failed ?? (r.ok ? tail(s.agy.out) : `its sign-in page answered ${r.status || r.statusText}`)
   console.log(`raea-cloud: google sign-in ${id.slice(0, 6)} ${credential ? "got a credential" : `no credential: ${why}`}`)

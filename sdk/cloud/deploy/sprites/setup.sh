@@ -34,6 +34,15 @@ if [ "$(/opt/raea/bin/raea --version 2> /dev/null)" != "$VERSION" ]; then
   rm -f "/tmp/$f" "/tmp/$f.sha256"
 fi
 
+# the Google sign-in's own browser (server/google-screen.ts): Chrome on a virtual display, shown over VNC
+sudo -E apt-get install -y -qq --no-install-recommends xvfb x11vnc fonts-noto-color-emoji > /dev/null
+command -v google-chrome > /dev/null || {
+  say "google chrome"
+  curl -fsSLo /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+  sudo -E apt-get install -y -qq /tmp/chrome.deb > /dev/null
+  rm -f /tmp/chrome.deb
+}
+
 # sdk/cloud's server, client and wrapper, as the image has them (image/Dockerfile)
 if [ ! -s /tmp/raea-cloud.tgz ]; then
   [ -n "$REF" ] || { echo "box: no /tmp/raea-cloud.tgz and no REF to take sdk/cloud from"; exit 2; }
