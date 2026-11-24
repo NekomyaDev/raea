@@ -15,7 +15,8 @@
 #   GET  /healthz
 #
 # Every call but /healthz carries Authorization: Bearer RAEA_INGEST_TOKEN (Modal secret raea-ingest; the Worker's
-# secret of the same name). CPU only: a frame is ffmpeg seeking in the file, a second or two.
+# secret of the same name). The secret's OPENROUTER_API_KEY, when set, has index jobs transcribe with Whisper large-v3
+# on OpenRouter. CPU only: a frame is ffmpeg seeking in the file, a second or two.
 
 import os
 import subprocess
@@ -157,7 +158,7 @@ server_image = indexer_image_for(None)
 
 # one file indexed as a job (tools/library-index cloud-cli.ts), for a file of any length: raea cloud submits it through
 # the API's POST /v1/index-jobs and collects it with GET /v1/index-jobs/ID on its next alarm (index-run.ts)
-@app.function(image=indexer_image, gpu=GPU, cpu=4, memory=16384, timeout=3600, max_containers=12, scaledown_window=120)
+@app.function(image=indexer_image, gpu=GPU, cpu=4, memory=16384, secrets=[secret], timeout=3600, max_containers=12, scaledown_window=120)
 def index_job(url: str, name: str, kind: str) -> dict:
     import json
     import subprocess as sp
@@ -166,7 +167,9 @@ def index_job(url: str, name: str, kind: str) -> dict:
         inp, out = os.path.join(d, "in.json"), os.path.join(d, "out.json")
         with open(inp, "w") as f:
             json.dump({"url": url, "name": name, "kind": kind}, f)
-        r = sp.run(["node", "/app/cloud-cli.mjs", inp, out], cwd="/app", capture_output=True, text=True, timeout=3500)
+        # what's said: Whisper large-v3 on OpenRouter when the secret has its key (words.ts), else Whisper base here
+        words = "openrouter" if os.environ.get("OPENROUTER_API_KEY") else "whisper"
+        r = sp.run(["node", "/app/cloud-cli.mjs", inp, out], cwd="/app", capture_output=True, text=True, timeout=3500, env={**os.environ, "RAEA_LIBRARY_WORDS": words})
         if r.returncode != 0 or not os.path.exists(out):
             return {"error": f"the indexer stopped ({r.returncode}): {(r.stderr or '')[-300:]}"}
         with open(out) as f:
