@@ -124,7 +124,8 @@ export function spawnFor(id?: string): Spawn {
   const cmd = process.env.RAEA_AGENT_CMD
   if (cmd && (!want || want === "custom")) return { id: "custom", version: "", command: sh(), args: ["-c", cmd], env: {} }
   const all = installed()
-  const s = want ? all.find((a) => a.id === want) : all[0]
+  // with none named, Claude when it's there (11-24: antigravity-acp sorts first and would have become the default)
+  const s = want ? all.find((a) => a.id === want) : (all.find((a) => a.id === "claude-acp") ?? all[0])
   if (!s) throw new Error(want ? `${want} isn't installed in this image (installed: ${all.map((a) => a.id).join(", ") || "none"})` : "no agent is installed: build with AGENTS=..., or set RAEA_AGENT_CMD")
   return s
 }
