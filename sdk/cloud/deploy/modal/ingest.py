@@ -4,6 +4,12 @@
 #
 #   MODAL_PROFILE=raea modal deploy deploy/modal/ingest.py
 #
+#   indexer (its own URL, raea--raea-ingest-indexer…): raea's library indexer (tools/library-index cloud-server.ts, the
+#   desktop's indexFile in the cloud indexer's image: EmbeddingGemma 2 for pictures, shots, sound and words, TransNetV2
+#   cuts, Whisper base): POST /v1/index {url, name, kind} -> {fragment, posters}; POST /v1/embed {texts} -> query
+#   vectors. raea cloud writes the fragments to turbopuffer in raea-api's layout (IG8). Before deploying, bundle it:
+#   tools/library-index/cloud-build.sh
+#
 #   POST /v1/frame {url, at?}   a video's frame as a JPEG 640 px on its long side; at is where, as a fraction of its
 #                               length (0.1 when left out: past a fade from black, before the end card). IG4
 #   GET  /healthz
@@ -16,6 +22,9 @@ import subprocess
 import tempfile
 
 import modal
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+LIB = os.path.abspath(os.path.join(HERE, "..", "..", "..", "..", "tools", "library-index"))
 
 app = modal.App("raea-ingest", image=modal.Image.debian_slim(python_version="3.12").apt_install("ffmpeg").pip_install("fastapi[standard]"))
 secret = modal.Secret.from_name("raea-ingest")
@@ -60,6 +69,32 @@ def api():
         if req.headers.get("authorization", "").removeprefix("Bearer ") != token:
             raise HTTPException(401, "a raea ingest token is needed (Authorization: Bearer)")
 
+    @web.post("/v1/index-jobs")
+    async def submit(req: Request):
+        check(req)
+        b = await req.json()
+        if not isinstance(b.get("url"), str) or not b["url"].startswith("https://"):
+            raise HTTPException(400, "url is the file's https address")
+        if b.get("kind") not in ("video", "image", "audio", "doc"):
+            raise HTTPException(400, "kind is one of video, image, audio, doc")
+        call = await index_job.spawn.aio(b["url"], str(b.get("name") or "file"), b["kind"])
+        return {"id": call.object_id}
+
+    @web.get("/v1/index-jobs/{job}")
+    async def collect(job: str, req: Request):
+        check(req)
+        try:
+            out = await modal.FunctionCall.from_id(job).get.aio(timeout=0)
+        except modal.exception.FunctionTimeoutError:
+            return {"state": "failed", "error": "the file took over an hour"}
+        except (TimeoutError, modal.exception.TimeoutError):
+            return {"state": "running"}
+        except Exception as e:
+            return {"state": "failed", "error": str(e)[:300]}
+        if out.get("error"):
+            return {"state": "failed", **out}
+        return {"state": "done", **out}
+
     @web.get("/healthz")
     def healthz():
         return PlainTextResponse("ok")
@@ -92,3 +127,91 @@ def api():
         return Response(jpg, media_type="image/jpeg")
 
     return web
+
+
+# the index jobs' GPU: an L4 by default (EmbeddingGemma 2 at fp16 on CUDA 13: loaded in 6 s, a batch in under one);
+# RAEA_INDEX_GPU= (empty) at deploy for the CPU at q8
+GPU = os.environ.get("RAEA_INDEX_GPU", "L4") or None
+
+# the cloud indexer's own image (tools/library-index/Dockerfile: Node, ffmpeg, EmbeddingGemma 2's and Whisper's weights
+# baked in) on CUDA 13 with cuDNN 9 (onnxruntime-node 1.30's CUDA provider links CUDA 13, though its package says cuda12), its fp16 weights for the GPU beside the q8
+# ones, pdftotext for documents and the raea cloud server. EmbeddingGemma 2 (the fingerprints: pictures, shots, sound,
+# words) runs on the GPU; Whisper, TransNetV2's cuts and ffmpeg on the CPU beside it
+def indexer_image_for(gpu):
+  return (
+    # on a GPU, build/Dockerfile.gpu (cloud-build.sh: the CUDA 13 base and fp16 weights written in; Modal's builds
+    # don't take a build argument in FROM, so BASE as an argument left a plain Ubuntu without CUDA)
+    modal.Image.from_dockerfile(os.path.join(LIB, "build", "Dockerfile.gpu") if gpu else os.path.join(LIB, "Dockerfile"), context_dir=LIB, add_python="3.12")
+    .apt_install("poppler-utils")
+    .env({"RAEA_LIBRARY_DEVICE": "cuda", "RAEA_LIBRARY_DTYPE": "fp16"} if gpu else {})
+    .add_local_file(os.path.join(LIB, "build", "cloud-server.mjs"), "/app/cloud-server.mjs")
+    .add_local_file(os.path.join(LIB, "build", "cloud-cli.mjs"), "/app/cloud-cli.mjs")
+  )
+
+
+# index jobs on the GPU when there is one; the search-words server on the CPU (a query is one short text, seconds on a
+# CPU, and a GPU held five minutes for it isn't worth it; q8 and fp16 vectors of the same model compare)
+indexer_image = indexer_image_for(GPU)
+server_image = indexer_image_for(None)
+
+
+# one file indexed as a job (tools/library-index cloud-cli.ts), for a file of any length: raea cloud submits it through
+# the API's POST /v1/index-jobs and collects it with GET /v1/index-jobs/ID on its next alarm (index-run.ts)
+@app.function(image=indexer_image, gpu=GPU, cpu=4, memory=16384, timeout=3600, max_containers=12, scaledown_window=120)
+def index_job(url: str, name: str, kind: str) -> dict:
+    import json
+    import subprocess as sp
+
+    with tempfile.TemporaryDirectory() as d:
+        inp, out = os.path.join(d, "in.json"), os.path.join(d, "out.json")
+        with open(inp, "w") as f:
+            json.dump({"url": url, "name": name, "kind": kind}, f)
+        r = sp.run(["node", "/app/cloud-cli.mjs", inp, out], cwd="/app", capture_output=True, text=True, timeout=3500)
+        if r.returncode != 0 or not os.path.exists(out):
+            return {"error": f"the indexer stopped ({r.returncode}): {(r.stderr or '')[-300:]}"}
+        with open(out) as f:
+            return json.load(f)
+
+
+# a GPU only while there's work: five idle minutes and the container goes
+@app.function(image=server_image, cpu=4, memory=12288, secrets=[secret], timeout=3600, scaledown_window=300)
+@modal.concurrent(max_inputs=4)
+@modal.web_server(8080, startup_timeout=180)
+def indexer():
+    import subprocess as sp
+
+    sp.Popen(["node", "/app/cloud-server.mjs"], cwd="/app", env={**os.environ, "PORT": "8080"})
+
+
+# the GPU checked: RAEA_INDEX_GPU=L4 MODAL_PROFILE=raea modal run deploy/modal/ingest.py::gpu_probe. EmbeddingGemma 2
+# loaded on the GPU at fp16 and two texts embedded, each step timed
+PROBE = """
+const t0 = Date.now(), log = (...a) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}s]`, ...a)
+const tf = await import("@huggingface/transformers")
+tf.env.cacheDir = "/models"
+const id = "onnx-community/embeddinggemma-2-ONNX"
+const p = await tf.AutoProcessor.from_pretrained(id)
+log("model fp16 on", process.env.RAEA_LIBRARY_DEVICE)
+const m = await tf.AutoModel.from_pretrained(id, { dtype: "fp16", device: process.env.RAEA_LIBRARY_DEVICE || "cpu" })
+log("loaded")
+for (let k = 0; k < 2; k++) { const o = await m(await p(["a white rabbit in a forest", "a quarterly sales spreadsheet"])); log("two texts", o.sentence_embedding.dims, o.sentence_embedding.tolist()[0].slice(0, 3)) }
+process.exit(0)
+"""
+
+
+@app.function(image=indexer_image, gpu=GPU, cpu=4, memory=16384, timeout=900)
+def gpu_probe() -> str:
+    import subprocess as sp
+
+    def run(cmd: str, t: int = 600) -> str:
+        r = sp.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=t, cwd="/app")
+        return (r.stdout + r.stderr)[-3000:]
+
+    out = run("nvidia-smi | grep -o 'CUDA Version: [0-9.]*'; nvidia-smi --query-gpu=name --format=csv,noheader")
+    out += run("echo CUDA_VERSION=$CUDA_VERSION NV_CUDA=$NV_CUDA_LIB_VERSION LD=$LD_LIBRARY_PATH; ls -d /usr/local/cuda* 2>&1; find / -xdev \\( -name 'libcublas.so*' -o -name 'libcudart.so*' -o -name 'libcudnn.so*' \\) 2>/dev/null | head; cat /etc/os-release | head -2")
+    out += run("ldd node_modules/onnxruntime-node/bin/napi-v*/linux/x64/libonnxruntime_providers_cuda.so | grep 'not found' || echo 'cuda provider: every library found'")
+    with open("/app/probe.mjs", "w") as f:
+        f.write(PROBE)
+    out += run("node probe.mjs 2>&1 | cut -c1-300")
+    print(out)
+    return out

@@ -51,6 +51,8 @@ Feature: raea cloud: a synced folder is pictured, understood, embedded and organ
         a final cut, a brief, a script, a logo, a voiceover, a reference; its subject; its client or brand; its format,
         9x16 or 16x9; its length), and for each tag who said it and why
     Scenario: IG6. raea's model reads first; the workspace's agent when there's none
+      (built 11-24 with raea's model as a vision model on OpenRouter, tagger.ts: description, role, client, tags with
+      why, on the item and its turbopuffer rows; raea ask's clef model takes its place when it's deployed)
       Given the workspace's plan has raea's ask model (raea ask, docs/ask.feature: clef-omni on the plan's pool)
       Then the files are read by it, batched, the spend on the pool
       Otherwise they are read by the workspace's own connected agent on raea cloud's box (Claude Code on its Claude, or
@@ -60,13 +62,20 @@ Feature: raea cloud: a synced folder is pictured, understood, embedded and organ
       When someone removes or changes a tag, or moves a file to another folder
       Then raea never puts it back, and the next files like it are read with that correction in the prompt
 
-  Rule: every file is embedded by its kind, once
-    Scenario: IG8. Embeddings run on Modal, in raea's own models
-      Then pictures and video frames are embedded by SigLIP 2 (the model raea index uses on the Mac, so a desktop's and
-        the cloud's vectors compare), sounds by CLAP, and words (documents, transcripts, descriptions) by the text model
-        search already uses; on Modal (sdk/cloud/deploy/modal, beside the render farm), a GPU only while there's work
-      And a vector is kept per file version and model, never made twice, and dropped with its file
+  Rule: every file is embedded by its kind, once, into turbopuffer (Enterprise)
+    Scenario: IG8. raea's own library indexer runs on Modal and writes to turbopuffer
+      Then each file is indexed by the desktop's own indexer (apps/app host/library/index-file.ts, in the cloud
+        indexer's image: EmbeddingGemma 2 for pictures, shots, sound and words, TransNetV2 cuts, Whisper; a document's
+        text in windows), as a job on Modal (ingest.py index_job, any length), so a desktop's and the cloud's vectors
+        compare; EmbeddingGemma 2 on a GPU (RAEA_INDEX_GPU=L4: fp16, CUDA 13) while there's work, else the CPU at q8
+      And its rows go to turbopuffer in raea-api's layout, one namespace a workspace (raea-cloud-<workspace>.
+        embeddinggemma-2@768), a row per segment and modality, replaced when the file is indexed again
+      And only an Enterprise workspace is indexed in the cloud (raea cloud is Enterprise only, Shane 11-24); the raea
+        app's Pro and Team plans embed on their own computers and keep their index in turbopuffer through raea-api,
+        Free on the Mac
+      (built 11-24: index-run.ts, tools/library-index cloud.ts, cloud-cli.ts, cloud-server.ts)
     Scenario: IG9. Search finds a file by what's in it
+      (built 11-24: search.ts deep, turbopuffer's nearest segments, a hit's at {t0, t1})
       When the person searches "girl laughing on a street corner, vertical"
       Then the words are matched against pictures and frames (SigLIP's text tower), descriptions and transcripts, and
         tags, fused into one ranking; a hit says where in a video it is
