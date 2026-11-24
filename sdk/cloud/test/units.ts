@@ -9,6 +9,7 @@ import path from "node:path"
 import { parseSummary, pick } from "../server/gpu.ts"
 import { plan, projectRoot } from "../server/offload.ts"
 import { shellEnv } from "../server/shell-os.ts"
+import { landedQuery, linkIn, packCredential, unpackCredential } from "../server/google-token.ts"
 
 const L4 = `Devices:
 ========
@@ -76,3 +77,32 @@ assert.deepEqual(shellEnv({ Path: "C:\\w" }, true, "C:\\g\\usr\\bin\\sh.exe"), {
 assert.deepEqual(shellEnv({ PATH: "C:\\w" }, true, "bash"), { PATH: "C:\\w" })
 assert.deepEqual(shellEnv({ PATH: "/usr/bin" }, false, "/bin/bash"), { PATH: "/usr/bin" })
 console.log("units: ok")
+
+// google-token.ts: Antigravity's Google sign-in link, the address the browser lands on, the credential's files
+{
+  const out = `I1124 credential_manager.py:561] Launching browser login flow...\nhttps://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id=x.apps.googleusercontent.com&redirect_uri=http%3A%2F%2F127.0.0.1%3A54616%2F&state=abc123&access_type=offline\n`
+  const l = linkIn(out)!
+  assert.equal(l.port, 54616)
+  assert.equal(l.state, "abc123")
+  assert.equal(linkIn("https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=https%3A%2F%2Fevil.example%2F&state=x"), undefined, "a link back anywhere but this box is refused")
+  assert.equal(landedQuery("http://127.0.0.1:54616/?state=abc123&code=4/0Ab&scope=email", l), "/?state=abc123&code=4/0Ab&scope=email")
+  assert.throws(() => landedQuery("http://127.0.0.1:54616/?state=other&code=4/0Ab", l), /another sign-in/)
+  assert.throws(() => landedQuery("http://127.0.0.1:9999/?state=abc123&code=4/0Ab", l), /isn't the page/)
+  assert.throws(() => landedQuery("http://127.0.0.1:54616/?state=abc123", l), /no code/)
+  assert.throws(() => landedQuery("http://127.0.0.1:54616/?error=access_denied&state=abc123", l), /access_denied/)
+  assert.throws(() => landedQuery("4/0Ab-just-a-code", l), /whole address/)
+  const home = mkdtempSync(path.join(os.tmpdir(), "units-gemini-"))
+  mkdirSync(path.join(home, "antigravity-acp"), { recursive: true })
+  writeFileSync(path.join(home, "antigravity-acp", "oauth.json"), '{"refresh_token":"1//x","email":"a@b.c"}')
+  writeFileSync(path.join(home, "antigravity-acp", "settings.json"), '{"theme":"dark"}')
+  const c = packCredential(home)!
+  assert.ok(c.startsWith("agy1:"))
+  assert.deepEqual(Object.keys(JSON.parse(Buffer.from(c.slice(5), "base64").toString())), ["antigravity-acp/oauth.json"], "only the token file goes")
+  const other = mkdtempSync(path.join(os.tmpdir(), "units-gemini-"))
+  unpackCredential(c, other)
+  assert.equal(packCredential(other), c)
+  assert.throws(() => unpackCredential(`agy1:${Buffer.from(JSON.stringify({ "../../etc/x": "y" })).toString("base64")}`, other), /outside its folder/)
+  rmSync(home, { recursive: true, force: true })
+  rmSync(other, { recursive: true, force: true })
+  console.log("ok google-token")
+}

@@ -11,8 +11,20 @@
 //                                       (10 min unless given, 1 h at most) its process group is stopped and the last
 //                                       line says {exit, timed_out: true}. For an agent's shell tool (raea cloud)
 //   POST /v1/login?agent=ID             an agent's terminal sign-in: {url, code, state, output}; GET says where it is
+//   POST /v1/claude-token               a Claude subscription sign-in in a browser: {id, url} (claude-token.ts)
+//   POST /v1/claude-token/ID {code}     the code claude.com showed, in: {token}, handed back once and never kept
+//   POST /v1/claude-token/check {token} one short Claude Code turn on it: {ok, said}
+//   POST /v1/google-token               a Google AI subscription sign-in (Antigravity): {id, url} (google-token.ts)
+//   POST /v1/google-token/ID {address}  the address Google's sign-in landed on, in: {credential, email?}, handed back once
+//   POST /v1/google-token/check {credential} one short Antigravity turn on it (or a Gemini API key): {ok, said, models}
 //   WS   /v1/acp?agent=ID               one agent process per socket: a text frame is one ACP message to its stdin,
-//                                       each line it prints is one frame back
+//                                       each line it prints is one frame back. A caller signing the agent in as one of
+//                                       its own clients (raea cloud, per workspace) sends x-raea-agent-env: JSON of the
+//                                       model keys below, and x-raea-agent-home: a short name. That socket's agent gets
+//                                       only those keys (never the container's) and its own config folder under
+//                                       ~/.agent-homes/NAME, so one client's sign-in never runs another's work. A
+//                                       Google sign-in (RAEA_GOOGLE_CREDENTIAL) is the one thing written: its token
+//                                       file, into that socket's own GEMINI_HOME, where Antigravity reads it.
 //   POST /v1/jobs?args=JSON             a render job: a folder in (tar.zst), `raea ARGS` on it, followed with
 //   GET  /v1/jobs/ID?from=N             short requests, and the files it made back from /out (jobs.ts); how a CPU
 //   GET  /v1/jobs/ID/out                box hands renders to a GPU worker (offload.ts)
@@ -29,6 +41,8 @@ import { WebSocketServer } from "ws"
 import { installed, spawnFor } from "./agents.ts"
 import { device } from "./gpu.ts"
 import * as jobs from "./jobs.ts"
+import { checkClaude, finishClaudeSignIn, startClaudeSignIn } from "./claude-token.ts"
+import { checkGoogle, finishGoogleSignIn, startGoogleSignIn, unpackCredential } from "./google-token.ts"
 import { login, loginState } from "./login.ts"
 import { Outside, resolve, WORK } from "./workspace.ts"
 
@@ -48,6 +62,55 @@ const childEnv = (): NodeJS.ProcessEnv => {
 }
 
 let version: string | undefined
+
+/** the model keys a caller may hand one agent process, and the config folder each agent keeps its state in */
+const AGENT_KEYS = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY", "GEMINI_API_KEY"] as const
+const AGENT_HOMES: Record<string, string> = { CLAUDE_CONFIG_DIR: "claude", CODEX_HOME: "codex", GEMINI_CLI_HOME: "gemini", GEMINI_HOME: "gemini/.gemini" }
+/** a Google sign-in's token file (google-token.ts), written into the socket's GEMINI_HOME rather than handed on */
+const GOOGLE_CREDENTIAL = "RAEA_GOOGLE_CREDENTIAL"
+
+/** a socket's own sign-in (its headers), or null to run on the container's environment */
+export function socketEnv(headers: Record<string, string | string[] | undefined>, home = process.env.HOME ?? "/root"): Record<string, string> | null {
+  const raw = headers["x-raea-agent-env"]
+  if (typeof raw !== "string" || !raw) return null
+  let given: Record<string, unknown>
+  try {
+    given = JSON.parse(raw)
+  } catch {
+    throw new Error("x-raea-agent-env isn't JSON")
+  }
+  const env: Record<string, string> = {}
+  for (const k of AGENT_KEYS) {
+    const v = given[k]
+    if (typeof v === "string" && v) env[k] = v
+  }
+  const google = typeof given[GOOGLE_CREDENTIAL] === "string" ? (given[GOOGLE_CREDENTIAL] as string) : ""
+  if (!Object.keys(env).length && !google) throw new Error(`x-raea-agent-env names none of ${[...AGENT_KEYS, GOOGLE_CREDENTIAL].join(", ")}`)
+  const name = String(headers["x-raea-agent-home"] ?? "")
+  if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(name)) throw new Error("x-raea-agent-home must be a short lowercase name")
+  for (const [k, dir] of Object.entries(AGENT_HOMES)) {
+    env[k] = path.join(home, ".agent-homes", name, dir)
+    mkdirSync(env[k], { recursive: true, mode: 0o700 })
+  }
+  if (google) {
+    unpackCredential(google, env.GEMINI_HOME)
+    env.AGY_ACP_FORCE_FILE_STORAGE = "1"
+  }
+  return env
+}
+
+/** what a socket signed in as one of raea cloud's clients runs with: its agent works one turn at a time for a caller
+ *  that ends the run when the turn ends, so Claude Code mustn't background a command and end its turn to wait for it
+ *  (11-21: a render backgrounded, the turn ended, the project stopped with nothing to show), and a render through
+ *  raea's MCP tools or in the shell gets half an hour */
+const RUN_DEFAULTS: Record<string, string> = { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1", BASH_DEFAULT_TIMEOUT_MS: "1800000", BASH_MAX_TIMEOUT_MS: "3600000", MCP_TOOL_TIMEOUT: "1800000" }
+
+/** the container's environment less every model key: a socket with its own sign-in never falls back to the box's */
+const withoutKeys = (env: NodeJS.ProcessEnv) => {
+  const out = { ...env }
+  for (const k of [...AGENT_KEYS, "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS"]) delete out[k]
+  return out
+}
 const raeaVersion = () => {
   try {
     version ??= execFileSync(RAEA, ["--version"], { encoding: "utf8", timeout: 20_000, env: childEnv() }).trim()
@@ -181,6 +244,26 @@ const server = createServer(async (req, res) => {
       const f = await jobs.follow(job[1], Number(url.searchParams.get("from") ?? 0))
       return f ? json(res, f) : json(res, { error: "no job with that id" }, 404)
     }
+    if (url.pathname === "/v1/claude-token" && req.method === "POST") return json(res, await startClaudeSignIn(childEnv()))
+    if (url.pathname === "/v1/claude-token/check" && req.method === "POST") {
+      const b = JSON.parse((await body(req)).toString("utf8") || "{}") as { token?: unknown }
+      return json(res, await checkClaude(childEnv(), String(b.token ?? "")))
+    }
+    if (url.pathname === "/v1/google-token" && req.method === "POST") return json(res, await startGoogleSignIn(childEnv()))
+    if (url.pathname === "/v1/google-token/check" && req.method === "POST") {
+      const b = JSON.parse((await body(req)).toString("utf8") || "{}") as { credential?: unknown }
+      return json(res, await checkGoogle(childEnv(), String(b.credential ?? "")))
+    }
+    const gt = /^\/v1\/google-token\/([0-9a-f]{24})$/.exec(url.pathname)
+    if (gt && req.method === "POST") {
+      const b = JSON.parse((await body(req)).toString("utf8") || "{}") as { address?: unknown }
+      return json(res, await finishGoogleSignIn(gt[1], String(b.address ?? "")))
+    }
+    const ct = /^\/v1\/claude-token\/([0-9a-f]{24})$/.exec(url.pathname)
+    if (ct && req.method === "POST") {
+      const b = JSON.parse((await body(req)).toString("utf8") || "{}") as { code?: unknown }
+      return json(res, await finishClaudeSignIn(ct[1], String(b.code ?? "")))
+    }
     if (url.pathname === "/v1/login") {
       const a = spawnFor(url.searchParams.get("agent") ?? undefined)
       return json(res, req.method === "POST" ? await login(a, childEnv()) : loginState(a.id))
@@ -204,8 +287,15 @@ server.on("upgrade", (req, socket, head) => {
     return socket.end(`HTTP/1.1 400 Bad Request\r\ncontent-type: text/plain\r\n\r\n${(e as Error).message}`)
   }
   const agent = a
+  let own: Record<string, string> | null
+  try {
+    own = socketEnv(req.headers)
+  } catch (e) {
+    return socket.end(`HTTP/1.1 400 Bad Request\r\ncontent-type: text/plain\r\n\r\n${(e as Error).message}`)
+  }
+  const env = own ? { ...withoutKeys(childEnv()), ...agent.env, ...RUN_DEFAULTS, ...own } : { ...childEnv(), ...agent.env }
   wss.handleUpgrade(req, socket, head, (ws) => {
-    const child = spawn(agent.command, agent.args, { cwd: WORK, env: { ...childEnv(), ...agent.env }, stdio: ["pipe", "pipe", "inherit"] })
+    const child = spawn(agent.command, agent.args, { cwd: WORK, env, stdio: ["pipe", "pipe", "inherit"] })
     let buf = ""
     // ACP messages are newline-delimited JSON: split on \n only
     child.stdout.setEncoding("utf8").on("data", (c: string) => {

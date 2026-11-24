@@ -22,7 +22,7 @@ set -euo pipefail
 NAME=${2:-}
 [ -n "$NAME" ] || { echo "box: name the Sprite"; exit 2; }
 RAEA_VERSION=${RAEA_VERSION:-0.1.6}
-AGENTS=${AGENTS:-kimi-code claude-acp}
+AGENTS=${AGENTS:-kimi-code claude-acp antigravity-acp}
 HERE=$(cd "$(dirname "$0")/../.." && pwd)
 FARM=${RAEA_FARM_ENV:-$HOME/.config/raea-cloud/farm.env}
 
