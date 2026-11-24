@@ -96,6 +96,35 @@ def api():
             return {"state": "failed", **out}
         return {"state": "done", **out}
 
+    # a fingerprint's model (fingerprint_fit below): trained as a job, its state collected like an index job's
+    @web.post("/v1/fingerprints/fit")
+    async def fp_fit(req: Request):
+        check(req)
+        b = await req.json()
+        if not all(isinstance(b.get(k), str) and b[k] for k in ("workspace", "fingerprint")) or not isinstance(b.get("modalities"), dict):
+            raise HTTPException(400, "workspace, fingerprint and modalities {v|a|t: {good, bad, background}}")
+        call = await fingerprint_fit.spawn.aio(b["workspace"], b["fingerprint"], b["modalities"])
+        return {"id": call.object_id}
+
+    @web.get("/v1/fingerprints/jobs/{job}")
+    async def fp_job(job: str, req: Request):
+        check(req)
+        try:
+            out = await modal.FunctionCall.from_id(job).get.aio(timeout=0)
+        except (TimeoutError, modal.exception.TimeoutError):
+            return {"state": "running"}
+        except Exception as e:
+            return {"state": "failed", "error": str(e)[:300]}
+        return {"state": "failed", **out} if out.get("error") else {"state": "done", **out}
+
+    @web.post("/v1/fingerprints/score")
+    async def fp_score(req: Request):
+        check(req)
+        b = await req.json()
+        if not all(isinstance(b.get(k), str) and b[k] for k in ("workspace", "fingerprint")) or not isinstance(b.get("vectors"), dict):
+            raise HTTPException(400, "workspace, fingerprint and vectors {v|a|t: [f16 base64]}")
+        return await fingerprint_score.remote.aio(b["workspace"], b["fingerprint"], b["vectors"])
+
     @web.get("/healthz")
     def healthz():
         return PlainTextResponse("ok")
@@ -200,6 +229,143 @@ log("loaded")
 for (let k = 0; k < 2; k++) { const o = await m(await p(["a white rabbit in a forest", "a quarterly sales spreadsheet"])); log("two texts", o.sentence_embedding.dims, o.sentence_embedding.tolist()[0].slice(0, 3)) }
 process.exit(0)
 """
+
+
+# ---- a fingerprint's model (raea cloud's fingerprint-model.ts; Shane 11-24: "our embedding models for fingerprints
+# stored and runnable from Modal GPU") ----
+# Per modality (v picture, a sound, t words), a linear head on EmbeddingGemma 2's 768-d vectors, trained on the GPU:
+# a fingerprint's good references against its bad ones, and, while it has few or no bad ones, against a sample of the
+# workspace's other files (what's distinctive in it, against the rest of the library). Its held-out separation (AUC,
+# k-fold) says how much it has learned. Kept on the volume raea-fingerprints at <workspace>/<fingerprint>.json, the
+# newest one per fingerprint; fingerprint_score loads it on the GPU and scores vectors (a file's segments) 0..1.
+# training.ts's SigLIP fine-tune replaces the head once a fingerprint has 200 judged examples.
+fp_volume = modal.Volume.from_name("raea-fingerprints", create_if_missing=True)
+fp_image = modal.Image.debian_slim(python_version="3.12").pip_install("torch==2.8.0", "numpy")
+
+
+def _fp_path(workspace: str, fingerprint: str) -> str:
+    import re
+
+    safe = lambda x: re.sub(r"[^A-Za-z0-9._-]+", "-", x)[:80]
+    return f"/fp/{safe(workspace)}/{safe(fingerprint)}.json"
+
+
+def _vectors(xs):
+    import base64
+
+    import numpy as np
+
+    rows = [np.frombuffer(base64.b64decode(x), dtype="<f2").astype("float32") for x in xs or [] if isinstance(x, str)]
+    rows = [r for r in rows if r.shape == (768,)]
+    return np.stack(rows) if rows else np.zeros((0, 768), dtype="float32")
+
+
+def _auc(pos, neg) -> float:
+    import numpy as np
+
+    if not len(pos) or not len(neg):
+        return None
+    allv = np.concatenate([pos, neg])
+    ranks = allv.argsort().argsort() + 1.0
+    return float((ranks[: len(pos)].sum() - len(pos) * (len(pos) + 1) / 2) / (len(pos) * len(neg)))
+
+
+def _r4(x):
+    return None if x is None else round(x, 4)
+
+
+def _train(torch, good, neg, wneg, dev, steps=400):
+    """logistic regression on the GPU, classes balanced, started from the difference of their means"""
+    X = torch.tensor(__import__("numpy").concatenate([good, neg]), device=dev)
+    y = torch.cat([torch.ones(len(good), device=dev), torch.zeros(len(neg), device=dev)])
+    wt = torch.cat([torch.full((len(good),), 0.5 / len(good), device=dev), torch.tensor(wneg, device=dev) * (0.5 / float(sum(wneg)))])
+    init = X[: len(good)].mean(0) - X[len(good) :].mean(0)
+    w = (init / (init.norm() + 1e-6) * 4).clone().requires_grad_(True)
+    b = torch.zeros(1, device=dev, requires_grad=True)
+    opt = torch.optim.Adam([w, b], lr=0.05)
+    for _ in range(steps):
+        opt.zero_grad()
+        logit = X @ w + b
+        loss = (torch.nn.functional.binary_cross_entropy_with_logits(logit, y, reduction="none") * wt).sum() + 1e-3 * (w * w).sum()
+        loss.backward()
+        opt.step()
+    return w.detach(), b.detach()
+
+
+@app.function(image=fp_image, gpu=GPU, volumes={"/fp": fp_volume}, timeout=900)
+def fingerprint_fit(workspace: str, fingerprint: str, modalities: dict) -> dict:
+    import json
+    import time
+
+    import numpy as np
+    import torch
+
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    out = {"workspace": workspace, "fingerprint": fingerprint, "model": "embeddinggemma-2@768", "version": int(time.time() * 1000), "device": torch.cuda.get_device_name(0) if dev == "cuda" else "cpu", "modalities": {}}
+    for m, d in (modalities or {}).items():
+        if m not in ("v", "a", "t"):
+            continue
+        good, bad, bg = _vectors(d.get("good")), _vectors(d.get("bad")), _vectors(d.get("background"))
+        if len(good) < 3 or len(bad) + len(bg) < 3:
+            continue
+        neg = np.concatenate([bad, bg])
+        # a bad reference says more than an unlabelled file: three times the weight
+        wneg = [3.0] * len(bad) + [1.0] * len(bg)
+        # held-out separation, k-fold on the good side and the negatives alike
+        k = min(5, len(good), len(neg))
+        rng = np.random.default_rng(0)
+        gi, ni = rng.permutation(len(good)) % k, rng.permutation(len(neg)) % k
+        hp, hn, hb = [], [], []
+        for f in range(k):
+            w, b = _train(torch, good[gi != f], neg[ni != f], [x for x, i in zip(wneg, ni) if i != f], dev, steps=250)
+            hp += torch.sigmoid(torch.tensor(good[gi == f], device=dev) @ w + b).tolist()
+            hn += torch.sigmoid(torch.tensor(neg[ni == f], device=dev) @ w + b).tolist()
+            hb += [int(i) < len(bad) for i in np.where(ni == f)[0]]
+        w, b = _train(torch, good, neg, wneg, dev)
+        gs = torch.sigmoid(torch.tensor(good, device=dev) @ w + b).cpu().numpy()
+        out["modalities"][m] = {
+            "w": [round(float(x), 6) for x in w.cpu().numpy()],
+            "b": float(b.cpu().numpy()[0]),
+            "good": int(len(good)),
+            "bad": int(len(bad)),
+            "background": int(len(bg)),
+            "auc": _r4(_auc(np.array(hp), np.array(hn))),
+            # against its bad references alone, when it has any: the boundary people drew
+            "auc_bad": _r4(_auc(np.array(hp), np.array([s for s, x in zip(hn, hb) if x]))),
+            # a typical good example's score, to read a new one against
+            "good_median": round(float(np.median(gs)), 4),
+        }
+    if not out["modalities"]:
+        return {"error": "too few examples: a modality needs 3 good and 3 others"}
+    path = _fp_path(workspace, fingerprint)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(out, f)
+    fp_volume.commit()
+    return {k: v for k, v in out.items() if k != "modalities"} | {"modalities": {m: {k: v for k, v in x.items() if k != "w"} for m, x in out["modalities"].items()}, "path": path}
+
+
+@app.function(image=fp_image, gpu=GPU, volumes={"/fp": fp_volume}, timeout=300, scaledown_window=120)
+def fingerprint_score(workspace: str, fingerprint: str, vectors: dict) -> dict:
+    import json
+
+    import torch
+
+    fp_volume.reload()
+    path = _fp_path(workspace, fingerprint)
+    if not os.path.exists(path):
+        return {"error": "this fingerprint has no model yet"}
+    model = json.load(open(path))
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    scores = {}
+    for m, xs in (vectors or {}).items():
+        head = model["modalities"].get(m)
+        X = _vectors(xs)
+        if not head or not len(X):
+            continue
+        w = torch.tensor(head["w"], device=dev)
+        scores[m] = [round(float(s), 4) for s in torch.sigmoid(torch.tensor(X, device=dev) @ w + head["b"]).tolist()]
+    return {"version": model["version"], "device": torch.cuda.get_device_name(0) if dev == "cuda" else "cpu", "scores": scores, "good_median": {m: h["good_median"] for m, h in model["modalities"].items()}}
 
 
 @app.function(image=indexer_image, gpu=GPU, cpu=4, memory=16384, timeout=900)
