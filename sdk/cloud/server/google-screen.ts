@@ -9,7 +9,7 @@
 // with it) and VNC port; all three stop when the sign-in ends. With no Chrome installed there's no screen, and the
 // sign-in falls back to the pasted address.
 import { type ChildProcess, spawn, spawnSync } from "node:child_process"
-import { existsSync } from "node:fs"
+import { existsSync, readFileSync, rmSync } from "node:fs"
 import { connect } from "node:net"
 import path from "node:path"
 
@@ -41,10 +41,39 @@ const listening = (port: number) =>
     s.once("error", () => ok(false))
   })
 
-/** the first display number from 100 with no X socket, and its VNC port */
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+/** the first display number from 100 that's free: no X server holds it (a socket and lock left by one that's gone,
+ *  as a restart of the service leaves them, are cleared) */
 function freeDisplay(): number {
-  for (let n = 100; n < 400; n++) if (!existsSync(`/tmp/.X11-unix/X${n}`) && !existsSync(`/tmp/.X${n}-lock`)) return n
+  for (let n = 100; n < 400; n++) {
+    const sock = `/tmp/.X11-unix/X${n}`, lock = `/tmp/.X${n}-lock`
+    const pid = existsSync(lock) ? Number(readFileSync(lock, "utf8").trim()) : 0
+    if (pid && alive(pid)) continue
+    if (existsSync(sock) || existsSync(lock)) {
+      try {
+        rmSync(sock, { force: true })
+        rmSync(lock, { force: true })
+      } catch {
+        continue
+      }
+    }
+    return n
+  }
   throw new Error("no free display for the sign-in's browser")
+}
+
+/** whether Chrome has a window up on display n (xdotool; without it, assumed so) */
+const windowUp = (n: number) => {
+  if (!which("xdotool")) return true
+  const r = spawnSync("xdotool", ["search", "--onlyvisible", "--class", "chrome"], { env: { ...process.env, DISPLAY: `:${n}` }, encoding: "utf8" })
+  return r.status === 0 && r.stdout.trim() !== ""
 }
 
 /** a Chrome on a display of its own at url, served over VNC on 127.0.0.1; its profile is under dir */
@@ -91,6 +120,8 @@ export async function openScreen(dir: string, url: string): Promise<Screen> {
       if (!ok) await new Promise((r) => setTimeout(r, 200))
     }
     if (!ok) throw new Error("the sign-in's screen didn't start")
+    // the page, not a black screen: a fresh Chrome profile takes a while on the box's CPU (about 20 s seen 11-24)
+    for (let t = 0; t < 45_000 && !windowUp(n); t += 300) await new Promise((r) => setTimeout(r, 300))
   } catch (e) {
     stop()
     throw e

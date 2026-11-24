@@ -35,7 +35,7 @@ if [ "$(/opt/raea/bin/raea --version 2> /dev/null)" != "$VERSION" ]; then
 fi
 
 # the Google sign-in's own browser (server/google-screen.ts): Chrome on a virtual display, shown over VNC
-sudo -E apt-get install -y -qq --no-install-recommends xvfb x11vnc fonts-noto-color-emoji > /dev/null
+sudo -E apt-get install -y -qq --no-install-recommends xvfb x11vnc xdotool fonts-noto-color-emoji > /dev/null
 command -v google-chrome > /dev/null || {
   say "google chrome"
   curl -fsSLo /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
