@@ -229,7 +229,7 @@ mod tests;
 
 /// Why `raea spec` refused a brief, in its own words: its refusal is the last line it printed, on whichever stream
 /// (a REFUSED line goes to stdout, a thrown module's error to stderr). Reading stderr alone left the reason empty.
-fn why_refused(out: &std::process::Output) -> String {
+pub fn why_refused(out: &std::process::Output) -> String {
     let last = |b: &[u8]| String::from_utf8_lossy(b).lines().rev().find(|l| !l.trim().is_empty()).map(|l| l.trim().trim_start_matches("REFUSED").trim().to_string());
     last(&out.stderr).or_else(|| last(&out.stdout)).unwrap_or_else(|| "raea spec printed nothing".into())
 }
