@@ -1395,6 +1395,9 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                                     x: -node.scroll_offset().x * self.scale,
                                     y: -node.scroll_offset().y * self.scale,
                                 });
+                                // raea: a stacking context's negative z-index children go under its own content
+                                // (CSS 2.1 Appendix E step 3): its text was drawn first and they covered it (#241)
+                                cx.draw_negative_z(scene, cx.transform, child_clip_rect);
                                 cx.draw_image(scene);
                                 #[cfg(feature = "svg")]
                                 cx.draw_svg(scene);
@@ -1405,7 +1408,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
                                 cx.draw_text_input_text(scene, content_position);
                                 cx.draw_inline_layout(scene, content_position);
                                 cx.draw_marker(scene, content_position);
-                                cx.draw_children(scene, cx.transform, child_clip_rect);
+                                cx.draw_from_z_zero(scene, cx.transform, child_clip_rect);
                                 cx.draw_select_chevron(scene);
                             },
                         );
@@ -2171,8 +2174,13 @@ impl ElementCx<'_, '_> {
         parent_style_transform: Affine,
         clip_rect: Rect,
     ) {
-        // Negative z_index hoisted nodes
+        self.draw_negative_z(scene, parent_style_transform, clip_rect);
+        self.draw_from_z_zero(scene, parent_style_transform, clip_rect);
+    }
 
+    /// raea: the negative z-index children of this stacking context, which paint over its background and under
+    /// everything else of it, its own text included (#241)
+    fn draw_negative_z(&self, scene: &mut impl PaintScene, parent_style_transform: Affine, clip_rect: Rect) {
         if let Some(hoisted) = &self.node.stacking_context {
             for hoisted_child in hoisted.neg_z_hoisted_children().filter(|c| !self.from_above(c.node_id)) {
                 let position = hoisted_child.position(self.node.tree(), self.node.id);
@@ -2190,7 +2198,10 @@ impl ElementCx<'_, '_> {
                 (0..clips).for_each(|_| scene.pop_layer());
             }
         }
+    }
 
+    /// raea: the children in tree order, then the positive z-index ones (see [`Self::draw_negative_z`])
+    fn draw_from_z_zero(&self, scene: &mut impl PaintScene, parent_style_transform: Affine, clip_rect: Rect) {
         // Regular children
         if paint_phases() {
             for phase in [Phase::Blocks, Phase::Floats, Phase::Inlines, Phase::Positioned] {

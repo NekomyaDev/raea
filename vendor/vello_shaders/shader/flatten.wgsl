@@ -553,6 +553,9 @@ fn draw_cap(
     write_line_with_transform(line_ix, path_ix, start, end, transform);
 }
 
+// raea: the least sine of the angle between two tangents that still gets a miter point (see draw_join, #240)
+const MITER_SINE_MIN = 4e-3;
+
 fn draw_join(
     path_ix: u32, style_flags: u32, p0: vec2f,
     tan_prev: vec2f, tan_next: vec2f,
@@ -589,6 +592,12 @@ fn draw_join(
             // tangents.
             if 2. * hypot < (hypot + d) * miter_limit * miter_limit
                 && abs(cr) > TANGENT_THRESH * TANGENT_THRESH
+                // raea: and when the tangents are within a quarter of a degree of one line, whatever their lengths
+                // (`cr` grows with them, so a long line after an arc passed the test above): the intersection is
+                // taken from two points a fraction of a pixel apart, lost in f32 at page coordinates, and the miter
+                // point landed hundreds of pixels away, a bar across the page (raea #240). A bevel there is the miter
+                // to within 0.003 px
+                && abs(cr) > MITER_SINE_MIN * hypot
             {
                 let is_backside = cr > 0.;
                 let fp_last = select(front0, back1, is_backside);

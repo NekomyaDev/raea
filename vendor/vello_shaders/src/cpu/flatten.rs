@@ -459,6 +459,8 @@ fn draw_join(
 
             if 2. * hypot < (hypot + d) * miter_limit * miter_limit
                 && cr.abs() > TANGENT_THRESH.powi(2)
+                // raea: as flatten.wgsl's MITER_SINE_MIN (raea #240)
+                && cr.abs() > 4e-3 * hypot
             {
                 let is_backside = cr > 0.;
                 let fp_last = if is_backside { back1 } else { front0 };
