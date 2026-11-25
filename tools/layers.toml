@@ -188,6 +188,7 @@ raea-runtime-view = "runtime"
 raea-runtime-world = "runtime"
 raea-runtime-encode = "runtime"
 raea-runtime-endchecks = "runtime"
+raea-runtime-lod-plan = "runtime"  # MK21: a part planned far or as a grey box that a shot shows closer than its plan
 raea-runtime-plugins = "runtime"
 raea-runtime-live = "runtime"
 raea-runtime-look = "runtime"

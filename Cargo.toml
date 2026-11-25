@@ -193,6 +193,7 @@ members = [
     "runtime/canvas",
     "runtime/export",
     "runtime/endchecks",
+    "runtime/lod-plan",
     "runtime/live",
     "runtime/page",
     "runtime/appscreen",

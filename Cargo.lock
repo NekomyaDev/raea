@@ -13896,6 +13896,7 @@ dependencies = [
  "raea-core-facts",
  "raea-core-review",
  "raea-io-home",
+ "raea-runtime-lod-plan",
  "resvg 0.48.1",
  "serde_json",
 ]
@@ -13976,6 +13977,7 @@ dependencies = [
  "raea-core-scene",
  "raea-runtime-bundle",
  "raea-runtime-export",
+ "raea-runtime-lod-plan",
  "raea-sys-contact",
  "raea-sys-light-meter",
  "raea-sys-stage",
@@ -15364,6 +15366,7 @@ version = "0.1.0"
 dependencies = [
  "raea-core-facts",
  "raea-core-scene",
+ "raea-runtime-lod-plan",
  "raea-sys-contact",
  "raea-sys-stage",
  "serde_json",
@@ -15502,6 +15505,18 @@ dependencies = [
  "twox-hash",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "raea-runtime-lod-plan"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "dunce",
+ "raea-core-facts",
+ "raea-core-scene",
+ "raea-sys-stage",
+ "serde_json",
 ]
 
 [[package]]

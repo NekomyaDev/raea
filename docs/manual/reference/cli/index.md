@@ -68,7 +68,7 @@ What's wrong before anyone watches it.
 | [`raea make`](make.md) | A scene, kit or shot made to its plan: the plan stop, the kit's references, generators, pick, prep and landing, a shot list's framing and lens charts, and whether it's done, decided in code; the agent's Stop hook holds it there. |
 | [`raea fingerprint`](fingerprint.md) | A person's sense of good work, learned on this Mac: axes with small heads over on-device encoders that score a render moment by moment and say what they can't judge yet. |
 | [`raea findings`](findings.md) | What each render and check found, read back from the project's record: fixed, new and carried since the one before. |
-| [`raea scene`](scene.md) | Find floating, sunk and clipping 3D parts, say what each part rests on, meter a shot's light, and hold every frame to the stage checks a render runs. |
+| [`raea scene`](scene.md) | Find floating, sunk and clipping 3D parts, say what each part rests on, meter a shot's light, hold every frame to the stage checks a render runs, and list each part's planned detail beside how large the frames show it. |
 | [`raea light`](light.md) | Measure a scene's light on each light path against its path-traced reference: distance in stops, the worst tile, flicker and cost. |
 | [`raea bench`](bench.md) | Each case on each denoiser against its converged truth: FLIP, RMSE, bias, flicker, blotches, lag after a disocclusion or a light going out, a frame's cost, and how many of MetalFX's numbers each meets. |
 | [`raea world`](world.md) | A frame as one world: its layers, text, 3D parts, camera, shots, clips, cues and lines as entities, queried across media. |
