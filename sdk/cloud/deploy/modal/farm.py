@@ -10,6 +10,9 @@
 #   GET  /v1/jobs/ID/media                                     with media=1: the job's media outputs [{path, oid, size}],
 #                                                              left out of /out
 #   POST /v1/jobs/ID/media {objects: [{path, oid, href, header}]}   PUTs each to its signed URL in R2 (farm_media.py)
+#   POST /v1/blobs/have {objects: [{oid, size}]}                which of a project's media the farm holds: {have: [oid]}
+#   PUT  /v1/blobs/OID?size=N                                   one media file into the farm's cache, kept when it
+#                                                              hashes to OID (a box's project not in raea's LFS)
 # A job's folder may hold .raea-cloud-media.json: its media by Git LFS object id with URLs signed for it, fetched from
 # R2 through a cache on the volume keyed by hash instead of coming in the tar (docs/cloud-render.feature CR23).
 #
@@ -111,7 +114,10 @@ def snapshot(d):
     for base, _, files in os.walk(d):
         for f in files:
             p = os.path.join(base, f)
-            s = os.stat(p)
+            try:
+                s = os.stat(p)
+            except OSError:  # a link that points nowhere here (a box's kits/ link to its cache): not a file of the job's
+                continue
             out[os.path.relpath(p, d)] = f"{s.st_size}:{s.st_mtime_ns}"
     return out
 
@@ -255,6 +261,19 @@ def coordinate(id: str, args: list[str], opts: dict):
         log(f"raea farm: {e!r}", err=True)
         code = 1
     vol.commit()
+    # what the job's GPU containers committed (a whole render's stills, its folder output) is only seen here after a
+    # reload: without it a render to a folder came back empty while a joined .mp4, written here, came back (11-20).
+    # Another job's open files in this coordinator refuse a reload (ConflictError, 11-21: a 500 for the box): try again,
+    # and if it still won't, go on with what this container sees rather than lose a finished render
+    for pause in (0.5, 1, 2, 4, 0):
+        try:
+            vol.reload()
+            break
+        except Exception as e:  # modal.exception.ConflictError
+            if not pause:
+                log(f"raea farm: the volume wouldn't reload ({e}); returning what this container sees", err=True)
+            else:
+                time.sleep(pause)
     after = snapshot(work)
     changed = [p for p, v in after.items() if before.get(p) != v]
     if opts.get("media"):
@@ -322,6 +341,55 @@ def api():
         await logs.put.aio(id, [])
         await coordinate.spawn.aio(id, args, opts)
         return {"id": id}
+
+    # a project's footage by hash, sent once (11-25: StreetTalk's 1.9 GB of interviews went in every render's tar, even
+    # one frame's, and three at once ran the box out of memory): the box asks which the farm has, PUTs the rest, and a
+    # job's .raea-cloud-media.json names them with no href (farm_media.fetch uses them from the cache)
+    @web.post("/v1/blobs/have")
+    async def blobs_have(req: Request):
+        check(req)
+        objects = (await req.json()).get("objects") or []
+        try:
+            await vol.reload.aio()
+        except Exception:  # another request's open file: what this container sees will do
+            pass
+        have = []
+        for o in objects[:5000]:
+            oid, size = str(o.get("oid", "")), int(o.get("size", -1))
+            blob = f"{ROOT}/blobs/{oid}"
+            if len(oid) == 64 and all(c in "0123456789abcdef" for c in oid) and os.path.exists(blob) and os.path.getsize(blob) == size:
+                have.append(oid)
+        return {"have": have}
+
+    @web.put("/v1/blobs/{oid}")
+    async def blob_put(oid: str, req: Request):
+        import hashlib
+
+        check(req)
+        if len(oid) != 64 or any(c not in "0123456789abcdef" for c in oid):
+            raise HTTPException(400, "not an object id: 64 hex characters")
+        size = int(req.query_params.get("size", "-1"))
+        os.makedirs(f"{ROOT}/blobs", exist_ok=True)
+        blob = f"{ROOT}/blobs/{oid}"
+        if os.path.exists(blob) and os.path.getsize(blob) == size:
+            return {"oid": oid, "bytes": size, "had": True}
+        tmp = f"{blob}.up-{uuid.uuid4().hex[:8]}"
+        h = hashlib.sha256()
+        n = 0
+        try:
+            with open(tmp, "wb") as f:
+                async for chunk in req.stream():
+                    h.update(chunk)
+                    f.write(chunk)
+                    n += len(chunk)
+            if h.hexdigest() != oid or n != size:
+                raise HTTPException(400, f"the file came as {h.hexdigest()[:12]}… ({n} bytes), not {oid[:12]}… ({size} bytes)")
+            os.replace(tmp, blob)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        await vol.commit.aio()
+        return {"oid": oid, "bytes": n}
 
     @web.get("/v1/jobs/{id}")
     async def follow(id: str, req: Request):

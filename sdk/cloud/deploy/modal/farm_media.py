@@ -5,6 +5,8 @@
 # a raea credential, only signed URLs that each reach one object.
 #
 #   .raea-cloud-media.json   in the job's folder, from the box: {"objects": [{"path", "oid", "size", "href", "header"}]}
+#                            An object with no href is one the box sent the farm itself (PUT /v1/blobs/OID, farm.py:
+#                            a project not in raea's LFS, 11-25): it is used from the cache, and only from there
 #   fetch(work, cache, ...)  each object into the cache (once), then into its path in the job's folder
 #   outputs(work, changed)   the job's media among what it made or changed: [{"path", "oid", "size"}]
 #   upload(work, objects)    PUTs each to its signed URL: [{"path", "oid", "href", "header"}]
@@ -78,7 +80,12 @@ def fetch(work, cache, log=print, download=get, check=probe):
         if len(oid) != 64 or any(c not in "0123456789abcdef" for c in oid) or not inside(work, path):
             raise ValueError(f"media: {path!r} ({oid}) isn't a path in the job or an object id")
         blob = os.path.join(cache, oid)
-        if os.path.exists(blob) and os.path.getsize(blob) == size:
+        if not o.get("href"):
+            # sent by the box over the farm's own token (PUT /v1/blobs), checked against its hash as it came
+            if not (os.path.exists(blob) and os.path.getsize(blob) == size):
+                raise ValueError(f"media: {path} ({oid[:12]}…) was never sent to the farm")
+            cached += size
+        elif os.path.exists(blob) and os.path.getsize(blob) == size:
             # a hash alone doesn't open the cache: the job's URL, signed for its account, has to answer
             check(o["href"], o.get("header"))
             cached += size
@@ -95,7 +102,12 @@ def fetch(work, cache, log=print, download=get, check=probe):
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         if os.path.lexists(dest):
             os.remove(dest)
-        shutil.copyfile(blob, dest)
+        # a link into the cache, not a copy: a project's footage is gigabytes, the same across every job (11-25); every
+        # container of the job mounts the volume at the same place, so the link resolves on the GPUs too
+        try:
+            os.symlink(blob, dest)
+        except OSError:
+            shutil.copyfile(blob, dest)
     log(f"raea farm: {len(objects)} media files by hash, {fetched / 1e6:.1f} MB from R2, {cached / 1e6:.1f} MB already here")
     return {"objects": len(objects), "fetched": fetched, "cached": cached}
 

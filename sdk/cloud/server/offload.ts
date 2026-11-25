@@ -21,7 +21,7 @@ import os from "node:os"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { RaeaCloud } from "../src/index.ts"
-import { excluded, excludes as mediaExcludes, inputs, lfsOf, outputs } from "./media.ts"
+import { excluded, excludes as mediaExcludes, farmBlobs, farmInputs, inputs, lfsOf, outputs } from "./media.ts"
 
 const REAL = process.env.RAEA_REAL ?? "/opt/raea/bin/raea"
 // flags whose value is a path raea writes; the rest of a render's path arguments are read
@@ -93,13 +93,23 @@ async function main() {
 
   const tmp = mkdtempSync(path.join(os.tmpdir(), "raea-offload-"))
   try {
-    const excludes = (process.env.RAEA_CLOUD_GPU_EXCLUDE ?? "./.git ./out/* ./.raea-cloud-out").split(/\s+/).filter(Boolean)
+    // kits/ (raea-game-kit) is a link into the box's shared cache, hundreds of MB, that the farm can't follow: a
+    // composition uses copies of the kit files it needs in its own folder (11-21: the dangling link hung farm jobs)
+    const excludes = (process.env.RAEA_CLOUD_GPU_EXCLUDE ?? "./.git ./out/* ./.raea-cloud-out ./kits").split(/\s+/).filter(Boolean)
     // zstd with GNU tar (the image's); gzip with another tar (a Mac's), whose zstd needs a program of its own
     const gnu = spawnSync("tar", ["--version"], { encoding: "utf8" }).stdout?.includes("GNU")
     const sent = path.join(tmp, "in.tar")
     // the media that goes by hash: out of the tar, named in its manifest
     const lfs = lfsOf(p.root)
-    const byHash = typeof lfs === "string" ? [] : await inputs(p.root, lfs, excluded(excludes))
+    let byHash = typeof lfs === "string" ? [] : await inputs(p.root, lfs, excluded(excludes))
+    // not in raea's LFS: the media goes into the farm's own cache by hash, once, instead of in every render's tar
+    // (RAEA_CLOUD_GPU_BLOBS=0 puts it back in the tar). A farm without the cache, or one that can't be reached here,
+    // leaves it in the tar, and the health check below says why the farm can't be reached
+    let viaFarm: { media: typeof byHash; sent: number } | null = null
+    if (typeof lfs === "string" && process.env.RAEA_CLOUD_GPU_BLOBS !== "0") {
+      viaFarm = await farmInputs(p.root, farmBlobs(url, token), excluded(excludes), say).catch((e) => (say(`the farm's media cache: ${(e as Error).message}; the media goes in the tar`), null))
+      if (viaFarm) byHash = viaFarm.media
+    }
     const extra: string[] = []
     if (byHash.length) {
       writeFileSync(path.join(tmp, "media-excludes"), mediaExcludes(byHash))
@@ -120,7 +130,8 @@ async function main() {
       throw new Error(`the GPU worker at ${url} didn't answer: ${(e as Error).message} (RAEA_CLOUD_GPU_FALLBACK=cpu renders here instead)`)
     }
     say(`rendering on ${new URL(url).host}, ${h.device.renders === "gpu" ? `GPU ${h.device.name}` : `its CPU (${h.device.name})`}: ${p.root} (${(folder.length / 1e6).toFixed(1)} MB) sent`)
-    if (byHash.length) say(`${byHash.length} media files (${(byHash.reduce((n, m) => n + m.size, 0) / 1e6).toFixed(1)} MB) go by hash: the farm fetches them from R2`)
+    if (viaFarm && byHash.length) say(`${byHash.length} media files (${(byHash.reduce((n, m) => n + m.size, 0) / 1e6).toFixed(1)} MB) go by hash from the farm's cache${viaFarm.sent ? `, ${(viaFarm.sent / 1e6).toFixed(1)} MB of it sent now` : ""}`)
+    else if (byHash.length) say(`${byHash.length} media files (${(byHash.reduce((n, m) => n + m.size, 0) / 1e6).toFixed(1)} MB) go by hash: the farm fetches them from R2`)
     else if (typeof lfs === "string" && existsSync(path.join(p.root, ".lfsconfig"))) say(`media goes in the tar: ${lfs}`)
     // a render farm's choices (deploy/modal/farm.py): RAEA_CLOUD_GPUS, RAEA_CLOUD_GPU_KIND, RAEA_CLOUD_MAX_USD
     const n = (v?: string) => (v ? Number(v) : undefined)

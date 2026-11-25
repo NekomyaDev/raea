@@ -10,8 +10,10 @@
 
 import { createHash } from "node:crypto"
 import { spawnSync } from "node:child_process"
-import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
+import os from "node:os"
 import path from "node:path"
+import { Readable } from "node:stream"
 import type { Media } from "../src/index.ts"
 
 const LFS = "application/vnd.git-lfs+json"
@@ -130,6 +132,102 @@ export async function outputs(root: string, lfs: Lfs, made: Media[]): Promise<{ 
     return bytes
   }
   return { send, done }
+}
+
+// what goes by hash when the project isn't in raea's LFS (farmInputs): media by type, and anything large, as the farm's
+// farm_media.py MEDIA and LARGE judge it; a file under SMALL stays in the tar, where it costs less than a lookup
+const MEDIA = new Set(
+  "mp4 mov m4v webm mkv avi mxf mp3 wav aiff aif flac m4a ogg opus caf png jpg jpeg heic heif webp gif tif tiff exr hdr psd blend glb gltf fbx obj usd usdz abc ply splat spz ktx2 ttf otf woff woff2 zip tar gz zst safetensors onnx bin npz npy pdf".split(" "),
+)
+const LARGE = 4 << 20
+const SMALL = 256 << 10
+
+/** the farm's cache of media (farm.py POST /v1/blobs/have, PUT /v1/blobs/OID), over its own token */
+export interface FarmBlobs {
+  /** which of these it holds; null when this farm has no cache (an older one): the media goes in the tar */
+  have(objects: { oid: string; size: number }[]): Promise<Set<string> | null>
+  put(file: string, oid: string, size: number): Promise<void>
+}
+
+export function farmBlobs(url: string, token: string): FarmBlobs {
+  const auth = { authorization: `Bearer ${token}` }
+  return {
+    async have(objects) {
+      const r = await fetch(`${url}/v1/blobs/have`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ objects }) })
+      if (r.status === 404) return null
+      if (!r.ok) throw new Error(`the farm's media cache answered ${r.status}: ${(await r.text()).slice(0, 200)}`)
+      return new Set(((await r.json()) as { have: string[] }).have)
+    },
+    async put(file, oid, size) {
+      // streamed from the disk: a file is never held in memory (a project's interviews are gigabytes)
+      const body = Readable.toWeb(createReadStream(file)) as unknown as ReadableStream
+      const r = await fetch(`${url}/v1/blobs/${oid}?size=${size}`, { method: "PUT", headers: { ...auth, "content-type": "application/octet-stream", "content-length": String(size) }, body, duplex: "half" } as RequestInit)
+      if (!r.ok) throw new Error(`the farm didn't keep ${path.basename(file)}: ${r.status} ${(await r.text()).slice(0, 200)}`)
+    },
+  }
+}
+
+/** each file's hash, kept by its path, size and time so a project's footage is hashed once, not on every render */
+function hashes(file: string) {
+  let known: Record<string, { size: number; mtime: number; oid: string }> = {}
+  try {
+    known = JSON.parse(readFileSync(file, "utf8"))
+  } catch {}
+  let changed = false
+  return {
+    async of(p: string, size: number, mtime: number): Promise<string> {
+      const k = known[p]
+      if (k && k.size === size && k.mtime === mtime) return k.oid
+      const oid = await sha256(p)
+      known[p] = { size, mtime, oid }
+      changed = true
+      return oid
+    },
+    save() {
+      if (!changed) return
+      mkdirSync(path.dirname(file), { recursive: true })
+      const tmp = `${file}.${process.pid}`
+      writeFileSync(tmp, JSON.stringify(known))
+      renameSync(tmp, file)
+    },
+  }
+}
+
+/** A project's media when it isn't in raea's LFS (11-25): each media or large file by its hash, sent once into the
+ *  farm's cache and named in the job's manifest with no href, so a render's tar holds the code and not the footage
+ *  (StreetTalk's 1.9 GB of interviews went in every render's tar, even one frame's). null when the farm has no cache.
+ *  `skip`: the tar's excludes. Links are left to the tar, as before. */
+export async function farmInputs(root: string, farm: FarmBlobs, skip: (p: string) => boolean = () => false, said: (s: string) => void = () => {}, store = path.join(os.homedir(), ".cache", "raea-offload", "hashes.json")): Promise<{ media: Media[]; sent: number } | null> {
+  const found: { path: string; abs: string; size: number; mtime: number }[] = []
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const abs = path.join(dir, e.name)
+      const rel = path.relative(root, abs).split(path.sep).join("/")
+      if (skip(rel)) continue
+      if (e.isDirectory()) walk(abs)
+      else if (e.isFile()) {
+        const st = statSync(abs)
+        const ext = e.name.includes(".") ? e.name.split(".").pop()!.toLowerCase() : ""
+        if (st.size >= LARGE || (st.size >= SMALL && MEDIA.has(ext))) found.push({ path: rel, abs, size: st.size, mtime: st.mtimeMs })
+      }
+    }
+  }
+  walk(root)
+  if (!found.length) return { media: [], sent: 0 }
+  const h = hashes(store)
+  const media: (Media & { abs: string })[] = []
+  for (const f of found) media.push({ path: f.path, oid: await h.of(f.abs, f.size, f.mtime), size: f.size, abs: f.abs })
+  h.save()
+  const have = await farm.have(media.map(({ oid, size }) => ({ oid, size })))
+  if (!have) return null
+  let sent = 0
+  const todo = media.filter((m, i) => !have.has(m.oid) && media.findIndex((x) => x.oid === m.oid) === i)
+  if (todo.length) said(`sending ${todo.length} media files (${(todo.reduce((n, m) => n + m.size, 0) / 1e6).toFixed(1)} MB) to the farm's cache, once`)
+  for (const m of todo) {
+    await farm.put(m.abs, m.oid, m.size)
+    sent += m.size
+  }
+  return { media: media.map(({ abs: _, ...m }) => m), sent }
 }
 
 /** tar's exclude-from lines for paths that go by hash: each matched as written (glob characters escaped) */

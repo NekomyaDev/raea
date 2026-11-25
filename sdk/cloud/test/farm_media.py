@@ -70,6 +70,23 @@ def job(objects):
 
 
 obj = {"path": "footage/take.mov", "oid": oid, "size": len(take), "href": f"{base}/{oid}", "header": {}}
+
+# footage the box sent the farm itself (PUT /v1/blobs, no href): used from the cache as a link, never fetched
+sent = b"interview " * 5000
+soid = hashlib.sha256(sent).hexdigest()
+open(os.path.join(cache, soid), "wb").write(sent)
+ws = job([{"path": "media/int1.MOV", "oid": soid, "size": len(sent)}])
+gets = hits["GET"]
+ss = fm.fetch(ws, cache, log=lambda _: None)
+assert open(os.path.join(ws, "media/int1.MOV"), "rb").read() == sent and os.path.islink(os.path.join(ws, "media/int1.MOV"))
+assert ss == {"objects": 1, "fetched": 0, "cached": len(sent)} and hits["GET"] == gets, ss
+try:
+    fm.fetch(job([{"path": "media/gone.MOV", "oid": "ab" * 32, "size": 10}]), cache, log=lambda _: None)
+    raise AssertionError("footage never sent was used")
+except ValueError as e:
+    assert "never sent" in str(e)
+ok("footage the box sent the farm itself comes from the cache as a link, and footage it never sent is refused")
+
 w1 = job([obj])
 s1 = fm.fetch(w1, cache, log=lambda _: None)
 assert open(os.path.join(w1, "footage/take.mov"), "rb").read() == take
