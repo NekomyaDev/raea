@@ -35,7 +35,7 @@ pub fn decode_audio_symphonia(path: &Path) -> R<Audio> {
         .find(|t| t.codec_params.sample_rate.is_some())
         .ok_or("no audio track")?
         .clone();
-    let mut dec = symphonia::default::get_codecs()
+    let mut dec = crate::opusdec::codecs()
         .make(&track.codec_params, &DecoderOptions::default())
         .map_err(|e| format!("symphonia: {e}"))?;
     let mut rate = track.codec_params.sample_rate.unwrap_or(0);
@@ -129,7 +129,7 @@ pub fn decode_audio_window_symphonia(path: &Path, start: f64, secs: f64) -> R<Au
         .map_err(|e| format!("symphonia: {e}"))?;
     let mut format = probed.format;
     let track = format.tracks().iter().find(|t| t.codec_params.sample_rate.is_some()).ok_or("no audio track")?.clone();
-    let mut dec = symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default()).map_err(|e| format!("symphonia: {e}"))?;
+    let mut dec = crate::opusdec::codecs().make(&track.codec_params, &DecoderOptions::default()).map_err(|e| format!("symphonia: {e}"))?;
     let rate = track.codec_params.sample_rate.unwrap_or(0);
     if rate == 0 {
         return Err(format!("{}: the sound track has no sample rate", path.display()));
@@ -353,6 +353,37 @@ mod window_tests {
             assert!(n > (whole.rate as usize) * 19 / 10, "window at {start} holds {n} samples");
             let err = (0..n).map(|i| (w.channels[0][i] - whole.channels[0][s0 + i]).abs()).fold(0.0f32, f32::max);
             assert!(err < 1e-4, "window at {start}: max difference {err}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod opus_tests {
+    use raea_io_codec::Audio;
+
+    /// Opus packets as this backend writes them decode back here (#242: no decoder took them, so raea's own MP4s read
+    /// as silent off the Mac): a 440 Hz tone, mono and stereo, comes back at its length and its level.
+    #[test]
+    fn opus_written_here_reads_back() {
+        for channels in [1usize, 2] {
+            let tone: Vec<f32> = (0..48_000).map(|i| 0.5 * (i as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin()).collect();
+            let a = Audio { rate: 48_000, channels: vec![tone; channels] };
+            let packets = super::opus_packets(&a).unwrap();
+            let mut dec = crate::packets::AudioPacketDecoder::new("opus", None, 48_000, channels as u32).unwrap();
+            let mut out = vec![Vec::new(); channels];
+            for (_, p) in &packets {
+                let (rate, planes) = dec.decode(p).unwrap();
+                assert_eq!(rate, 48_000);
+                assert_eq!(planes.len(), channels);
+                for (o, p) in out.iter_mut().zip(&planes) {
+                    o.extend_from_slice(p);
+                }
+            }
+            let n = out[0].len();
+            assert!((47_000..=49_500).contains(&n), "{channels} channel(s): {n} samples back from 48000");
+            // past the coder's start, the tone's level (0.5 peak is 0.354 RMS)
+            let rms = (out[0][4800..n - 4800].iter().map(|v| v * v).sum::<f32>() / (n - 9600) as f32).sqrt();
+            assert!((rms - 0.354).abs() < 0.03, "{channels} channel(s): RMS {rms}");
         }
     }
 }

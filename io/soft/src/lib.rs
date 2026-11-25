@@ -12,6 +12,8 @@
 mod audio;
 #[cfg(feature = "h264")]
 mod h264;
+/// Opus read back (libopus) as a Symphonia decoder, and the registry every decoder here is made from
+mod opusdec;
 /// packet-level audio decoding (Symphonia), for coders handed packets
 pub mod packets;
 mod probe;

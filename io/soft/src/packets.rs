@@ -1,5 +1,5 @@
 //! Packet-level audio decoding (Symphonia), for coders handed compressed packets one at a time: AAC (with its
-//! AudioSpecificConfig), MP3, FLAC, PCM, as Symphonia reads them. Planar f32 out.
+//! AudioSpecificConfig), MP3, FLAC, PCM, as Symphonia reads them, and Opus (opusdec.rs). Planar f32 out.
 
 use symphonia::core::audio::{AudioBufferRef, Signal};
 use symphonia::core::codecs::{CodecParameters, Decoder, DecoderOptions};
@@ -19,7 +19,8 @@ fn codec_type(codec: &str) -> R<symphonia::core::codecs::CodecType> {
         "mp4a" | "aac" => CODEC_TYPE_AAC,
         "mp3" => CODEC_TYPE_MP3,
         "flac" => CODEC_TYPE_FLAC,
-        o => return Err(format!("{o}: audio decodes here as aac, mp3 or flac")),
+        "opus" => CODEC_TYPE_OPUS,
+        o => return Err(format!("{o}: audio decodes here as aac, mp3, flac or opus")),
     })
 }
 
@@ -37,7 +38,7 @@ impl AudioPacketDecoder {
         } {
             p.with_channel_layout(layout);
         }
-        let dec = symphonia::default::get_codecs().make(&p, &DecoderOptions::default()).map_err(|e| format!("symphonia: {e}"))?;
+        let dec = crate::opusdec::codecs().make(&p, &DecoderOptions::default()).map_err(|e| format!("symphonia: {e}"))?;
         Ok(AudioPacketDecoder { dec, ts: 0 })
     }
 
