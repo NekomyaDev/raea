@@ -347,9 +347,15 @@ server.on("upgrade", (req, socket, head) => {
   }
   const env = own ? { ...withoutKeys(childEnv()), ...agent.env, ...RUN_DEFAULTS, ...own } : { ...childEnv(), ...agent.env }
   wss.handleUpgrade(req, socket, head, (ws) => {
-    const child = spawn(agent.command, agent.args, { cwd: WORK, env, stdio: ["pipe", "pipe", "inherit"] })
+    const child = spawn(agent.command, agent.args, { cwd: WORK, env, stdio: ["pipe", "pipe", "pipe"] })
     running.add(child)
     child.on("exit", () => running.delete(child))
+    // its stderr to the box's log as before, and along the socket as _raea/stderr notifications, so raea cloud keeps
+    // it with the run's trace (runtrace.ts) instead of only on this box's disk (11-25: raea-1's logs died with it)
+    child.stderr.setEncoding("utf8").on("data", (c: string) => {
+      process.stderr.write(c)
+      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ jsonrpc: "2.0", method: "_raea/stderr", params: { text: c.slice(0, 16_000) } }))
+    })
     let buf = ""
     // ACP messages are newline-delimited JSON: split on \n only
     child.stdout.setEncoding("utf8").on("data", (c: string) => {

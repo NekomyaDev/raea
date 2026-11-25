@@ -79,9 +79,11 @@ up)
   if [ "${RAEA_BOX_FORCE:-}" != 1 ]; then
     for i in $(seq 1 90); do
       n=$(x ". ~/.raea-cloud.env 2>/dev/null; curl -fsS -m 5 -H \"authorization: Bearer \$RAEA_CLOUD_TOKEN\" localhost:8080/v1/health 2>/dev/null" | python3 -c 'import json,sys
-try: print(json.load(sys.stdin).get("running", 0))
-except Exception: print(0)')
-      [ "${n:-0}" = 0 ] && break
+try: print(json.load(sys.stdin).get("running", "unknown"))
+except Exception: print("down")')
+      # down: nothing to cut off; unknown: a server too old to say, so it isn't rebuilt blind
+      [ "$n" = 0 ] || [ "$n" = down ] && break
+      [ "$n" = unknown ] && { echo "box: $NAME's server doesn't say whether agents are running: rebuild it when it's idle (RAEA_BOX_FORCE=1)"; exit 1; }
       [ "$i" = 90 ] && { echo "box: $NAME still has $n agents running: not rebuilt (RAEA_BOX_FORCE=1 to cut them off)"; exit 1; }
       [ "$i" = 1 ] && echo "box: $NAME has $n agents running: waiting for them to finish"
       sleep 10
