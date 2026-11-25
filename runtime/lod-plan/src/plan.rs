@@ -15,7 +15,12 @@ static READ: Mutex<Option<(PathBuf, Option<SystemTime>, HashMap<String, u8>)>> =
 
 /// The composition a command was given: its first word naming a .tsx or .jsx file (`raea render EDIT.tsx ...`).
 pub fn composition(words: impl IntoIterator<Item = String>) -> Option<PathBuf> {
-    words.into_iter().map(PathBuf::from).find(|w| w.extension().is_some_and(|x| x == "tsx" || x == "jsx"))
+    for w in words {
+        if w.ends_with(".tsx") || w.ends_with(".jsx") {
+            return Some(PathBuf::from(w));
+        }
+    }
+    None
 }
 
 /// The plan's levels for the composition this process was asked to render, read from its own command line: a render's
