@@ -143,7 +143,8 @@ open my $f, '>:raw', $out or die "$out: $!";
 print $f 'RIFF', pack('V', 36 + 2 * $n), 'WAVEfmt ', pack('VvvVVvv', 16, 1, 1, $sr, 2 * $sr, 2, 16), 'data', pack('V', 2 * $n), pack('s<*', @s);
 PL
 (cd "$check/song" && HOME="$check/song/home" LOCALAPPDATA="$check/song/home" RAEA_NO_TREE=1 "$raea" song loop.wav > song.log 2>&1) || { tail -20 "$check/song/song.log" >&2; fail "the unpacked raea didn't map a song"; }
-tempo=$(jq -r '.tempo' "$check/song/loop.song.json" | tr -d '\r')
+# (read without jq: a person's PC has none, tools/release-machines.sh)
+tempo=$(tr -d '\r\n' < "$check/song/loop.song.json" | sed -n 's/.*"tempo"[[:space:]]*:[[:space:]]*\([0-9.eE+-]*\).*/\1/p')
 awk -v t="$tempo" 'BEGIN { exit !(t >= 118 && t <= 122) }' || fail "raea song read the 120 BPM loop as $tempo BPM"
 # engine only: no raea API in the binaries, nothing key-shaped anywhere
 api=$(cat "$check"/raea/bin/* | grep -aoE '(api|sign)\.raea\.io|RAEA_(SIGN|GEN)_TOKEN' | sort -u | tr '\n' ' ' || true)
