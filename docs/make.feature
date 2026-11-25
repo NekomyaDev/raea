@@ -204,6 +204,7 @@ Feature: Make: scenes, kits and shots built to a frozen plan and held to a revie
     much of it gets built; the frames are measured against it on every render, so a camera move added later, or a
     box that was meant to be replaced, is said the next time anything is drawn.
 
+    @done
     Scenario: MK21. A part shown closer than its planned detail is said
       Given a level is how much of the frame a part's box spans through the frame's camera, the larger of its width's
         and its height's share: 0 the hero (50% or more), 1 featured (20%), 2 dressing (8%), 3 background (2%), 4 far
@@ -217,7 +218,7 @@ Feature: Make: scenes, kits and shots built to a frozen plan and held to a revie
       And a part out of the frame, behind the camera, or with another mesh's box across every line to it isn't seen;
         a part the camera stands in or beside is measured at its nearest point; RAEA_LOD_CHECK=0 leaves the check out
 
-    @needs:MK21
+    @needs:MK21 @done
     Scenario: MK22. The plan carries each object's level
       Given `lod: 0..4` on an object of `make` in brief.ts (core/brief make.rs; `doctor` refuses a level past 4)
       Then a render of a composition under that brief holds the parts named as the objects' ids to those levels
@@ -225,7 +226,7 @@ Feature: Make: scenes, kits and shots built to a frozen plan and held to a revie
       And `raea make plan` labels each footprint with its level and writes each grey box with its object's id as its
         name and its `lod`, so the blockout is held to the plan it draws
 
-    @needs:MK21
+    @needs:MK21 @done
     Scenario: MK23. `raea scene lod`: every part's plan beside what the frames show
       When `raea scene lod EDIT.tsx [--from N] [--to N] [--json]` steps the frames without drawing
       Then it lists every part: its planned level, the finest level a frame shows it at, how much of the frame it
@@ -235,7 +236,7 @@ Feature: Make: scenes, kits and shots built to a frozen plan and held to a revie
       And a level the plan gives a name that no part in the frames goes by is listed, since it holds nothing
       And it exits 1 when a part is seen two or more levels finer than planned
 
-    @needs:MK22
+    @needs:MK22 @done
     Scenario: MK24. A job is held at a part seen closer than planned
       Given a job whose composition's last render or check found `lod-closer`
       Then `raea make status` has a `lod` gate for that composition, open with the parts' names, until each is built

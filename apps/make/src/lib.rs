@@ -58,7 +58,7 @@ pub fn read_make(brief: &Path) -> Result<Option<Make>, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let out = std::process::Command::new(exe).arg("spec").arg(brief).args(["--as", "brief"]).env("RAEA_RECORD", "off").output().map_err(|e| e.to_string())?;
     let text = String::from_utf8_lossy(&out.stdout);
-    let start = text.find('{').ok_or_else(|| format!("{} didn't read as a brief: {}", brief.display(), String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("")))?;
+    let start = text.find('{').ok_or_else(|| format!("{} didn't read as a brief: {}", brief.display(), why_refused(&out)))?;
     let v: Value = serde_json::from_str(&text[start..]).map_err(|e| format!("{}: {e}", brief.display()))?;
     let b = v.get("brief").cloned().unwrap_or(v);
     match b.get("make") {
@@ -212,3 +212,10 @@ pub fn cli(args: &[String]) -> Result<String, String> {
 mod tests;
 #[cfg(test)]
 mod tests_steps;
+
+/// Why `raea spec` refused a brief, in its own words: its refusal is the last line it printed, on whichever stream
+/// (a REFUSED line goes to stdout, a thrown module's error to stderr). Reading stderr alone left the reason empty.
+fn why_refused(out: &std::process::Output) -> String {
+    let last = |b: &[u8]| String::from_utf8_lossy(b).lines().rev().find(|l| !l.trim().is_empty()).map(|l| l.trim().trim_start_matches("REFUSED").trim().to_string());
+    last(&out.stderr).or_else(|| last(&out.stdout)).unwrap_or_else(|| "raea spec printed nothing".into())
+}
