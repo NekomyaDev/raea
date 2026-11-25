@@ -24,7 +24,7 @@ Headless: it needs nothing running and opens no window. Takes up to 2 arguments 
 | `--duplex` | – | Listen all the time, with nothing taken out of the microphone's sound. For headphones: through speakers it hears itself and stops. |
 | `--fast` | – | With `--from`: read the recording as fast as it can be heard, not at the pace it was spoken. For tests. |
 | `--from` | `IN.wav` | A recording in the microphone's place. |
-| `--over` | – | Listen while it speaks, with its own voice taken out of the microphone's sound, so the person can talk over it through speakers. New: checked in a simulated room, not yet across real rooms. The first word or two said over it can be lost. |
+| `--over` | – | Listen while it speaks, with its own voice taken out of the microphone's sound, so the person can talk over it through speakers. Experimental, and raea.app doesn't use it. It works in a simulated room. In the one real room it was tried in (a wireless USB microphone and a Mac mini's speakers, 11-25) its own voice was never taken out well enough to be sure of, so nobody could talk over it and it behaved as without the flag: it never stopped itself by mistake either. |
 | `--pause` | `MS` | How long a silence ends the person's turn, in milliseconds. |
 | `--room` | `GAIN` | With `--from` and `--over`: a simulated room. What it says comes back into the recording at this gain (0.5 is a quiet room, 1.5 a loud one). |
 | `--to` | `OUT.wav` | A file in the speakers' place: everything it says is written there. |
