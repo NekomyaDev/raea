@@ -28,6 +28,14 @@ def split_out(args):
     return args[:i] + args[i + 2 :], args[i + 1] if i + 1 < len(args) else None
 
 
+def drop_flag(args, flag):
+    """The arguments without FLAG VALUE, and VALUE (None when it isn't there)."""
+    if flag not in args:
+        return list(args), None
+    i = args.index(flag)
+    return args[:i] + args[i + 2 :], args[i + 1] if i + 1 < len(args) else None
+
+
 def splittable(args):
     """A `raea render` of a composition to a video or a folder, every frame: the farm can split it."""
     if not args or args[0] != "render" or any(a in args for a in ("--frame", "--at", "--review", "--bundle", "--audio")):
@@ -161,6 +169,10 @@ def raea_render(args, opts, work, log, render, cpu_env, run, reload=lambda: None
     bill = bill or Bill()
     id = opts["id"]
     rest, out = split_out(args)
+    # the render's own --manifest is written here once it's done (from frame 0's): left in, the probe's run had two and
+    # wrote its own where the render's went, so it said no length and the job stopped unexplained (11-25: StreetTalk's
+    # four cuts, each "exit 1" after frame 0); and every GPU run would have written one into the job's folder
+    rest, manifest = drop_flag(rest, "--manifest")
     # the sound, on this CPU while the GPUs draw (a video's frames come back without it)
     sound = f"/tmp/{id}.wav"
     if out.endswith(VIDEO):
@@ -169,6 +181,8 @@ def raea_render(args, opts, work, log, render, cpu_env, run, reload=lambda: None
     p = bill.add(render.remote(id, rest, probe=True))
     if p["code"] or not p["length"]:
         log(p["out"], err=True)
+        if not p["code"]:
+            log("raea farm: frame 0 rendered but didn't say the piece's length, so its frames can't be shared out", err=True)
         return p["code"] or 1
     length, fps, kind = p["length"], p["fps"] or 30, p.get("kind") or opts.get("gpu") or "T4"
     log(f"raea farm: {length} frames at {p['w']}x{p['h']}, {fps} fps; frame 0 on a {kind} in {p['s']:.1f} s")
@@ -194,11 +208,19 @@ def raea_render(args, opts, work, log, render, cpu_env, run, reload=lambda: None
     code = spread(render, kind, [(id, rest, f, at, False, video) for f, at in runs(n0, length - 1, k * m, warm)], log, "frames", bill, k) if left else 0
     if code:
         return code
+    # the sound's run finished first: its open files in the job's folder refuse the reload that brings the other
+    # containers' frames (11-25: "the volume wouldn't reload ... cwd of raea render")
+    if video:
+        t.join()
     reload()  # the other containers' frames
     frames = f"{os.path.dirname(work)}/frames"
     dest = os.path.join(work, out)
+    if manifest and p.get("manifest"):
+        path = os.path.join(work, manifest)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(p["manifest"], f, indent=2)
     if video:
-        t.join()
         os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
         c, o, s = join(frames, dest, sound, run)
         log(f"raea farm: joined {out} in {s:.1f} s" if not c else o, err=bool(c))

@@ -1,6 +1,7 @@
 # The farm's planner (deploy/modal/farm_plan.py) with stand-in GPUs: python3 test/farm_plan.py from sdk/cloud. The
 # stand-ins write the frames they're asked for, so a split render is checked end to end, ffmpeg's encode included.
 
+import json
 import os
 import shutil
 import subprocess
@@ -33,8 +34,12 @@ class FakeGpu:
 
     def remote(self, id, args, frames=None, first=0, probe=False, video=False):
         self.calls.append(("probe" if probe else "run", frames, first))
+        self.args = getattr(self, "args", []) + [list(args)]
         if probe:
-            return {"code": 0, "out": "", "s": 12.5, "length": self.length, "fps": 30, "w": 1920, "h": 1080}
+            # as raea does with two --manifest: the first wins, so the probe's own says nothing
+            if args.count("--manifest") > 0:
+                return {"code": 0, "out": "APPLIED  1 frames", "s": 12.5, "length": None, "fps": None, "w": None, "h": None, "manifest": {}}
+            return {"code": 0, "out": "", "s": 12.5, "length": self.length, "fps": 30, "w": 1920, "h": 1080, "manifest": {"length": self.length, "fps": 30}}
         dest = os.path.join(self.root, "jobs", id, "frames")
         os.makedirs(dest, exist_ok=True)
         if video:
@@ -89,6 +94,16 @@ assert os.path.getsize(os.path.join(work, "out", "a.mp4")) > 0
 frames = int(subprocess.run(["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v", "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", os.path.join(work, "out", "a.mp4")], capture_output=True, text=True).stdout.strip())
 assert frames == 60, frames
 ok("a 60-frame render: frame 0, a timed run of 8, the rest on one more GPU, the runs joined into 60 frames")
+
+# the render's own --manifest (as an agent passes it): the GPUs never get it, and it's written from frame 0's at the end
+lines.clear()
+m = FakeGpu(root)
+os.makedirs(os.path.join(root, "jobs", "jm", "work"))
+code = fp.raea_render(["render", "a.tsx", "-o", "out/a.mp4", "--manifest", "out/a.render.json", "--quality", "high"], {"id": "jm", "gpu": "L4", "gpus": 10}, os.path.join(root, "jobs", "jm", "work"), log, m, {}, run)
+assert code == 0, lines
+assert all("--manifest" not in a and "--quality" in a for a in m.args), m.args
+assert json.load(open(os.path.join(root, "jobs", "jm", "work", "out", "a.render.json")))["length"] == 60
+ok("a render's own --manifest isn't passed to the GPUs (the probe would lose the length), and is written at the end")
 
 lines.clear()
 long = FakeGpu(root, length=1000)

@@ -165,7 +165,7 @@ def raea_run(id: str, args: list[str], frames: list[int] | None = None, first: i
     if probe:
         code, out, s = run(["raea", *args, "--frame", "0", "-o", "/tmp/probe.png", "--manifest", "/tmp/probe.json"], cwd=work)
         m = json.load(open("/tmp/probe.json")) if os.path.exists("/tmp/probe.json") else {}
-        return {"code": code, "out": out[-3000:], "s": s, "length": m.get("length"), "fps": m.get("fps"), "w": m.get("width"), "h": m.get("height"), "kind": kind(), **life()}
+        return {"code": code, "out": out[-3000:], "s": s, "length": m.get("length"), "fps": m.get("fps"), "w": m.get("width"), "h": m.get("height"), "kind": kind(), "manifest": m, **life()}
     if frames is None:
         code, out, s = run(["raea", *args], cwd=work)
         vol.commit()
