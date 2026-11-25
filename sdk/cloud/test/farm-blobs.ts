@@ -5,7 +5,7 @@
 // file changed since is sent again; out/ and links are left alone; a farm without the cache answers null.
 
 import { createHash } from "node:crypto"
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs"
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs"
 import { createServer } from "node:http"
 import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
@@ -81,6 +81,16 @@ writeFileSync(path.join(root, "brand", "logo.png"), Buffer.alloc(300 << 10, 4))
 const third = await farmInputs(root, blobs, skip, () => {}, store)
 assert(third!.sent === 300 << 10 && puts === 4, `a changed file is sent again: ${third!.sent}`)
 ok("a file changed since is hashed and sent again")
+
+// a new folder that hard-links the same footage (a thread started again) hashes nothing again
+const again = mkdtempSync(path.join(tmpdir(), "farm-blobs-linked-"))
+mkdirSync(path.join(again, "media"))
+linkSync(path.join(root, "media", "interview.MOV"), path.join(again, "media", "interview.MOV"))
+const linked = await farmInputs(again, blobs, skip, () => {}, store)
+assert(linked!.sent === 0 && linked!.media[0].oid === first!.media.find((m) => m.path === "media/interview.MOV")!.oid, "the linked file is known")
+const known = JSON.parse(readFileSync(store, "utf8")) as Record<string, unknown>
+assert(Object.keys(known).length === 4, `one entry a file (logo.png rewritten in place is the same file), not a path: ${Object.keys(known).length}`)
+ok("a new folder that links the same footage hashes and sends nothing again")
 
 cache = false
 assert((await farmInputs(root, blobs, skip, () => {}, store)) === null, "an older farm")

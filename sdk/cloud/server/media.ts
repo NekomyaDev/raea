@@ -167,7 +167,9 @@ export function farmBlobs(url: string, token: string): FarmBlobs {
   }
 }
 
-/** each file's hash, kept by its path, size and time so a project's footage is hashed once, not on every render */
+/** each file's hash, kept by the file itself (its device and inode) with its size and time, so a project's footage is
+ *  hashed once, not on every render, nor again in a new thread's folder that links the same files (11-25: StreetTalk's
+ *  restart hard-linked its 1.9 GB of interviews into a new folder, and they were hashed again) */
 function hashes(file: string) {
   let known: Record<string, { size: number; mtime: number; oid: string }> = {}
   try {
@@ -175,11 +177,11 @@ function hashes(file: string) {
   } catch {}
   let changed = false
   return {
-    async of(p: string, size: number, mtime: number): Promise<string> {
-      const k = known[p]
+    async of(p: string, id: string, size: number, mtime: number): Promise<string> {
+      const k = known[id]
       if (k && k.size === size && k.mtime === mtime) return k.oid
       const oid = await sha256(p)
-      known[p] = { size, mtime, oid }
+      known[id] = { size, mtime, oid }
       changed = true
       return oid
     },
@@ -198,7 +200,7 @@ function hashes(file: string) {
  *  (StreetTalk's 1.9 GB of interviews went in every render's tar, even one frame's). null when the farm has no cache.
  *  `skip`: the tar's excludes. Links are left to the tar, as before. */
 export async function farmInputs(root: string, farm: FarmBlobs, skip: (p: string) => boolean = () => false, said: (s: string) => void = () => {}, store = path.join(os.homedir(), ".cache", "raea-offload", "hashes.json")): Promise<{ media: Media[]; sent: number } | null> {
-  const found: { path: string; abs: string; size: number; mtime: number }[] = []
+  const found: { path: string; abs: string; id: string; size: number; mtime: number }[] = []
   const walk = (dir: string) => {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
       const abs = path.join(dir, e.name)
@@ -208,7 +210,7 @@ export async function farmInputs(root: string, farm: FarmBlobs, skip: (p: string
       else if (e.isFile()) {
         const st = statSync(abs)
         const ext = e.name.includes(".") ? e.name.split(".").pop()!.toLowerCase() : ""
-        if (st.size >= LARGE || (st.size >= SMALL && MEDIA.has(ext))) found.push({ path: rel, abs, size: st.size, mtime: st.mtimeMs })
+        if (st.size >= LARGE || (st.size >= SMALL && MEDIA.has(ext))) found.push({ path: rel, abs, id: `${st.dev}:${st.ino}`, size: st.size, mtime: st.mtimeMs })
       }
     }
   }
@@ -216,7 +218,7 @@ export async function farmInputs(root: string, farm: FarmBlobs, skip: (p: string
   if (!found.length) return { media: [], sent: 0 }
   const h = hashes(store)
   const media: (Media & { abs: string })[] = []
-  for (const f of found) media.push({ path: f.path, oid: await h.of(f.abs, f.size, f.mtime), size: f.size, abs: f.abs })
+  for (const f of found) media.push({ path: f.path, oid: await h.of(f.abs, f.id, f.size, f.mtime), size: f.size, abs: f.abs })
   h.save()
   const have = await farm.have(media.map(({ oid, size }) => ({ oid, size })))
   if (!have) return null
