@@ -164,7 +164,15 @@ export class RaeaCloud {
   /** A finished job's files: the ones its run made or changed, as a tar (zstd unless `as` says gz or tar). The server
    *  drops the job after. */
   async jobFiles(id: string, as: "zst" | "gz" | "tar" = "zst"): Promise<Uint8Array> {
-    return new Uint8Array(await (await this.fetch(`/v1/jobs/${id}/out?as=${as}`)).arrayBuffer())
+    // a farm whose volume is busy answers 503 and keeps the job (11-25: a 500 there lost a finished render): ask again
+    for (let i = 0; ; i++) {
+      try {
+        return new Uint8Array(await (await this.fetch(`/v1/jobs/${id}/out?as=${as}`)).arrayBuffer())
+      } catch (e) {
+        if (i >= 4 || !/: 503 /.test((e as Error).message)) throw e
+        await new Promise((r) => setTimeout(r, 1000 * 2 ** i))
+      }
+    }
   }
 
   /** A finished job's media outputs (a job started with farm.media), held on the farm until sendMedia. */

@@ -142,7 +142,9 @@ async function main() {
       finish = o.done
       return o.send
     }
-    const { exit, files } = await cloud.job(p.args, folder, { as: gnu ? "zst" : "gz", farm, media, onOutput: (t, s) => (s === "out" ? process.stdout : process.stderr).write(t) })
+    // what the job said, kept to spot a file it wanted that stayed here (out/ isn't sent: it's renders)
+    let said = ""
+    const { exit, files } = await cloud.job(p.args, folder, { as: gnu ? "zst" : "gz", farm, media, onOutput: (t, s) => ((said = (said + t).slice(-20000)), (s === "out" ? process.stdout : process.stderr).write(t)) })
 
     const back = path.join(tmp, "out.tar")
     writeFileSync(back, files)
@@ -165,6 +167,9 @@ async function main() {
       say(`its media (${(bytes / 1e6).toFixed(1)} MB) went from the farm to R2; here it's pointers (git lfs pull PATH brings one here)`)
     }
     say(`done on the GPU worker in ${((performance.now() - t0) / 1000).toFixed(1)} s, exit ${exit}`)
+    // 11-25: an agent kept its words in out/words/ and four renders failed on "No such file" with no reason given
+    const missed = exit ? /(?:^|[\s/])(out\/[^\s:]+): No such file/m.exec(said) : null
+    if (missed && excludes.includes("./out/*")) say(`${missed[1]} wasn't sent: out/ stays here, as it holds renders. Keep what a composition reads (words, data, stills it uses) in media/ or beside the composition`)
     process.exitCode = exit
   } finally {
     rmSync(tmp, { recursive: true, force: true })

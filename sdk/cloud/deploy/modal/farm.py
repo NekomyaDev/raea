@@ -25,6 +25,7 @@
 # - the clipping check (RAEA_CLIP_CHECK) is off on the GPUs: it is an agent's lint, and on a server's CPU it took more
 #   of a render than its frames (bench/gpus.py)
 
+import contextlib
 import json
 import os
 import re
@@ -254,6 +255,9 @@ def coordinate(id: str, args: list[str], opts: dict):
         vol.commit()
         log.end(1)
         return
+    # the media just linked (or fetched) into the job, committed before any GPU container reloads to render it: without
+    # this a still on this container found the footage and every GPU run of a video didn't ("No such file", 11-25)
+    vol.commit()
     before = snapshot(work)
     try:
         code = farm_plan.dispatch(args, {**opts, "id": id}, work, log, raea_run, blender_run, CPU_ENV, run, vol.reload)
@@ -302,6 +306,59 @@ def api():
     web = FastAPI()
     token = os.environ["RAEA_CLOUD_TOKEN"]
 
+    # This container serves many requests at once, and a volume reload refuses while any of them has a file open
+    # (ConflictError) and, when it goes ahead, takes /farm away from a request mid-write (PermissionError making a
+    # job's folder). 11-25: StreetTalk's renders lost a finished job's results (GET out: 500) and failed to start
+    # (POST jobs: 500) whenever two agents rendered together. So requests that touch the volume share it, and a
+    # reload waits until none of them is in it.
+    class Gate:
+        def __init__(self):
+            self.users = 0
+            self.reloading = False
+            self.cond = asyncio.Condition()
+
+        @contextlib.asynccontextmanager
+        async def use(self):
+            async with self.cond:
+                await self.cond.wait_for(lambda: not self.reloading)
+                self.users += 1
+            try:
+                yield
+            finally:
+                async with self.cond:
+                    self.users -= 1
+                    self.cond.notify_all()
+
+        async def reload(self, wait: bool = True) -> bool:
+            """the volume as other containers committed it; with wait=False skipped (False) while the volume is in use"""
+            async with self.cond:
+                if not wait and (self.users or self.reloading):
+                    return False
+                await self.cond.wait_for(lambda: not self.users and not self.reloading)
+                self.reloading = True
+            try:
+                for pause in (0.5, 1, 2, 4, 0):
+                    try:
+                        await vol.reload.aio()
+                        return True
+                    except Exception as e:  # modal.exception.ConflictError: a file open elsewhere in this container
+                        if not pause:
+                            print(f"raea farm: the volume wouldn't reload: {e}")
+                            return False
+                        await asyncio.sleep(pause)
+                return False
+            finally:
+                async with self.cond:
+                    self.reloading = False
+                    self.cond.notify_all()
+
+    gate = Gate()
+
+    async def reloaded():
+        """the coordinator's commits seen here, or a 503 the box tries again on (the job is still all here)"""
+        if not await gate.reload():
+            raise HTTPException(503, "the farm's volume is busy: try again")
+
     def check(req: Request):
         got = req.headers.get("authorization", "").removeprefix("Bearer ") or req.query_params.get("token", "")
         if got != token:
@@ -326,18 +383,19 @@ def api():
         opts = {"gpus": min(int(q.get("gpus", GPUS)), GPUS), "gpu": q.get("gpu"), "max_usd": float(q["max_usd"]) if "max_usd" in q else None, "media": q.get("media") == "1"}
         id = str(uuid.uuid4())
         work = f"{JOBS}/{id}/work"
-        os.makedirs(work)
-        tar = f"{JOBS}/{id}/in.tar"
-        with open(tar, "wb") as f:
-            async for chunk in req.stream():
-                f.write(chunk)
-        # GNU tar reads the compression itself, refuses members with .. and strips a leading /
-        x = subprocess.run(["tar", "-xf", tar, "-C", work, "--no-same-owner", "--no-same-permissions"], capture_output=True, text=True)
-        os.remove(tar)
-        if x.returncode:
-            shutil.rmtree(f"{JOBS}/{id}", ignore_errors=True)
-            raise HTTPException(400, f"the folder didn't unpack: {x.stderr.strip()}")
-        await vol.commit.aio()
+        async with gate.use():
+            os.makedirs(work)
+            tar = f"{JOBS}/{id}/in.tar"
+            with open(tar, "wb") as f:
+                async for chunk in req.stream():
+                    f.write(chunk)
+            # GNU tar reads the compression itself, refuses members with .. and strips a leading /
+            x = await asyncio.to_thread(subprocess.run, ["tar", "-xf", tar, "-C", work, "--no-same-owner", "--no-same-permissions"], capture_output=True, text=True)
+            os.remove(tar)
+            if x.returncode:
+                shutil.rmtree(f"{JOBS}/{id}", ignore_errors=True)
+                raise HTTPException(400, f"the folder didn't unpack: {x.stderr.strip()}")
+            await vol.commit.aio()
         await logs.put.aio(id, [])
         await coordinate.spawn.aio(id, args, opts)
         return {"id": id}
@@ -349,16 +407,14 @@ def api():
     async def blobs_have(req: Request):
         check(req)
         objects = (await req.json()).get("objects") or []
-        try:
-            await vol.reload.aio()
-        except Exception:  # another request's open file: what this container sees will do
-            pass
+        await gate.reload(wait=False)  # the volume in use: what this container sees will do (a blob it lacks is sent again)
         have = []
-        for o in objects[:5000]:
-            oid, size = str(o.get("oid", "")), int(o.get("size", -1))
-            blob = f"{ROOT}/blobs/{oid}"
-            if len(oid) == 64 and all(c in "0123456789abcdef" for c in oid) and os.path.exists(blob) and os.path.getsize(blob) == size:
-                have.append(oid)
+        async with gate.use():
+            for o in objects[:5000]:
+                oid, size = str(o.get("oid", "")), int(o.get("size", -1))
+                blob = f"{ROOT}/blobs/{oid}"
+                if len(oid) == 64 and all(c in "0123456789abcdef" for c in oid) and os.path.exists(blob) and os.path.getsize(blob) == size:
+                    have.append(oid)
         return {"have": have}
 
     @web.put("/v1/blobs/{oid}")
@@ -369,26 +425,27 @@ def api():
         if len(oid) != 64 or any(c not in "0123456789abcdef" for c in oid):
             raise HTTPException(400, "not an object id: 64 hex characters")
         size = int(req.query_params.get("size", "-1"))
-        os.makedirs(f"{ROOT}/blobs", exist_ok=True)
-        blob = f"{ROOT}/blobs/{oid}"
-        if os.path.exists(blob) and os.path.getsize(blob) == size:
-            return {"oid": oid, "bytes": size, "had": True}
-        tmp = f"{blob}.up-{uuid.uuid4().hex[:8]}"
-        h = hashlib.sha256()
-        n = 0
-        try:
-            with open(tmp, "wb") as f:
-                async for chunk in req.stream():
-                    h.update(chunk)
-                    f.write(chunk)
-                    n += len(chunk)
-            if h.hexdigest() != oid or n != size:
-                raise HTTPException(400, f"the file came as {h.hexdigest()[:12]}… ({n} bytes), not {oid[:12]}… ({size} bytes)")
-            os.replace(tmp, blob)
-        finally:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        await vol.commit.aio()
+        async with gate.use():
+            os.makedirs(f"{ROOT}/blobs", exist_ok=True)
+            blob = f"{ROOT}/blobs/{oid}"
+            if os.path.exists(blob) and os.path.getsize(blob) == size:
+                return {"oid": oid, "bytes": size, "had": True}
+            tmp = f"{blob}.up-{uuid.uuid4().hex[:8]}"
+            h = hashlib.sha256()
+            n = 0
+            try:
+                with open(tmp, "wb") as f:
+                    async for chunk in req.stream():
+                        h.update(chunk)
+                        f.write(chunk)
+                        n += len(chunk)
+                if h.hexdigest() != oid or n != size:
+                    raise HTTPException(400, f"the file came as {h.hexdigest()[:12]}… ({n} bytes), not {oid[:12]}… ({size} bytes)")
+                os.replace(tmp, blob)
+            finally:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            await vol.commit.aio()
         return {"oid": oid, "bytes": n}
 
     @web.get("/v1/jobs/{id}")
@@ -407,44 +464,47 @@ def api():
             await asyncio.sleep(0.5)
 
     @web.get("/v1/jobs/{id}/media")
-    def media_list(id: str, req: Request):
+    async def media_list(id: str, req: Request):
         check(req)
-        if logs.get(f"{id}:exit") is None:
+        if await logs.get.aio(f"{id}:exit") is None:
             raise HTTPException(404, "no such finished job")
-        vol.reload()
-        p = f"{JOBS}/{id}/media.json"
-        return {"objects": json.load(open(p)) if os.path.exists(p) else []}
+        await reloaded()
+        async with gate.use():
+            p = f"{JOBS}/{id}/media.json"
+            return {"objects": json.load(open(p)) if os.path.exists(p) else []}
 
     @web.post("/v1/jobs/{id}/media")
     async def media_send(id: str, req: Request):
         import farm_media
 
         check(req)
-        if logs.get(f"{id}:exit") is None:
+        if await logs.get.aio(f"{id}:exit") is None:
             raise HTTPException(404, "no such finished job")
-        await vol.reload.aio()
+        await reloaded()
         body = await req.json()
         objects = body.get("objects") if isinstance(body, dict) else None
         if not isinstance(objects, list):
             raise HTTPException(400, "objects: [{path, oid, href, header}]")
         # said in this container's log, not the job's (its log is done, and Log would start it again)
         try:
-            return await asyncio.to_thread(farm_media.upload, f"{JOBS}/{id}/work", objects, print)
+            async with gate.use():
+                return await asyncio.to_thread(farm_media.upload, f"{JOBS}/{id}/work", objects, print)
         except ValueError as e:
             raise HTTPException(400, str(e))
 
     @web.get("/v1/jobs/{id}/out")
-    def out(id: str, req: Request):
+    async def out(id: str, req: Request):
         check(req)
-        if logs.get(f"{id}:exit") is None:
+        if await logs.get.aio(f"{id}:exit") is None:
             raise HTTPException(404, "no such finished job")
-        vol.reload()
+        await reloaded()
         pack = {"zst": ["--zstd"], "gz": ["--gzip"], "tar": []}.get(req.query_params.get("as", "zst"), ["--zstd"])
-        r = subprocess.run(["tar", *pack, "-cf", "-", "-C", f"{JOBS}/{id}/work", "--verbatim-files-from", "-T", f"{JOBS}/{id}/changed.txt"], capture_output=True)
-        shutil.rmtree(f"{JOBS}/{id}", ignore_errors=True)
-        vol.commit()
+        async with gate.use():
+            r = await asyncio.to_thread(subprocess.run, ["tar", *pack, "-cf", "-", "-C", f"{JOBS}/{id}/work", "--verbatim-files-from", "-T", f"{JOBS}/{id}/changed.txt"], capture_output=True)
+            shutil.rmtree(f"{JOBS}/{id}", ignore_errors=True)
+            await vol.commit.aio()
         for k in (id, f"{id}:exit"):
-            logs.pop(k, None)
+            await logs.pop.aio(k, None)
         if r.returncode:
             raise HTTPException(500, f"the results didn't pack: {r.stderr.decode().strip()}")
         return Response(r.stdout, media_type="application/octet-stream")
