@@ -77,7 +77,25 @@ if [ -s /tmp/farm.env ]; then
 fi
 grep -q '^RAEA_CLOUD_GPU_URL=' ~/.raea-cloud.env || { echo "box: no farm (write RAEA_CLOUD_GPU_URL and RAEA_CLOUD_GPU_TOKEN to /tmp/farm.env)"; exit 2; }
 umask 022
-for a in $AGENTS; do raea skills install --agent "$a" > /dev/null 2>&1 || say "raea skills for $a not installed"; done
+# raea's skills by raea's own agent names (the registry's ids aren't them: 11-25, every box had gone without), into the
+# box's home; each client's socket links them into its own config folders (server/main.ts linkSkills)
+for a in $AGENTS; do
+  case "$a" in claude-acp) s=claude ;; antigravity-acp | gemini) s=gemini ;; kimi-code | kimi) s=kimi ;; codex-acp) s=codex ;; *) continue ;; esac
+  /opt/raea/bin/raea skills install --agent "$s" > /dev/null 2>&1 || say "raea skills for $a ($s) not installed"
+done
+
+# the build, as the caller stamped it (box.sh: /tmp/raea-cloud-build.json), with what this script put on: shown on
+# GET /v1/health and raea cloud's /v1/admin/boxes, so which code a box runs is never a guess
+python3 - "$NAME" "$VERSION" "$REF" << 'PY' > /opt/raea-cloud/BUILD.json
+import json, os, sys, datetime
+b = {}
+try: b = json.load(open("/tmp/raea-cloud-build.json"))
+except Exception: pass
+if sys.argv[3]: b.setdefault("commit", sys.argv[3]); b.setdefault("build", sys.argv[3][:12]); b.setdefault("dirty", False)
+b.update(box=sys.argv[1], raea=sys.argv[2], built_at=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"))
+print(json.dumps(b))
+PY
+rm -f /tmp/raea-cloud-build.json
 
 # the server, as the Sprite's HTTP service on 8080: raea on lavapipe (docs/cloud.feature CL13), renders to the farm
 cat > /opt/raea-cloud/image/sprite-start.sh << 'EOF'

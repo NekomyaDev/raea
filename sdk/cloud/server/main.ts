@@ -36,7 +36,7 @@
 
 import { execFileSync, spawn } from "node:child_process"
 import { timingSafeEqual } from "node:crypto"
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
 import path from "node:path"
 import { WebSocketServer } from "ws"
@@ -72,6 +72,33 @@ const AGENT_HOMES: Record<string, string> = { CLAUDE_CONFIG_DIR: "claude", CODEX
 /** a Google sign-in's token file (google-token.ts), written into the socket's GEMINI_HOME rather than handed on */
 const GOOGLE_CREDENTIAL = "RAEA_GOOGLE_CREDENTIAL"
 
+/** the agent processes running for open sockets now (GET /v1/health running) */
+const running = new Set<unknown>()
+
+/** the box's build, as setup.sh wrote it (/opt/raea-cloud/BUILD.json); null on a box made before builds were stamped */
+function buildOf(): Record<string, unknown> | null {
+  try {
+    return JSON.parse(readFileSync(path.join(process.env.RAEA_CLOUD_ROOT ?? "/opt/raea-cloud", "BUILD.json"), "utf8"))
+  } catch {
+    return null
+  }
+}
+
+/** raea's skills, installed once in the box's own home (setup.sh), linked into a socket's own config folders: each
+ *  client's agent gets its own home (AGENT_HOMES), which had left them without raea's skills (11-25) */
+const SKILL_DIRS: Record<string, string> = { CLAUDE_CONFIG_DIR: ".claude/skills", GEMINI_HOME: ".gemini/skills" }
+function linkSkills(env: Record<string, string>, home: string) {
+  for (const [k, rel] of Object.entries(SKILL_DIRS)) {
+    const from = path.join(home, rel)
+    const to = path.join(env[k], "skills")
+    try {
+      if (existsSync(from) && !existsSync(to)) symlinkSync(from, to)
+    } catch {
+      // a folder of its own already there: left alone
+    }
+  }
+}
+
 /** a socket's own sign-in (its headers), or null to run on the container's environment */
 export function socketEnv(headers: Record<string, string | string[] | undefined>, home = process.env.HOME ?? "/root"): Record<string, string> | null {
   const raw = headers["x-raea-agent-env"]
@@ -95,6 +122,7 @@ export function socketEnv(headers: Record<string, string | string[] | undefined>
     env[k] = path.join(home, ".agent-homes", name, dir)
     mkdirSync(env[k], { recursive: true, mode: 0o700 })
   }
+  linkSkills(env, home)
   if (google) {
     unpackCredential(google, env.GEMINI_HOME)
     env.AGY_ACP_FORCE_FILE_STORAGE = "1"
@@ -216,12 +244,16 @@ const server = createServer(async (req, res) => {
       const gpu = process.env.RAEA_CLOUD_GPU_URL
       return json(res, {
         raea: raeaVersion(),
+        // what deploy/sprites/box.sh put here: the build's id, the commit, whether the tree was dirty (BUILD.json)
+        build: buildOf(),
         agent: def,
         agents: installed().map((a) => ({ id: a.id, version: a.version })),
         workspace: WORK,
         device: device(childEnv()),
         offload: gpu ? { url: gpu, commands: (process.env.RAEA_CLOUD_GPU_COMMANDS ?? "render").split(/\s+/).filter(Boolean) } : null,
         jobs: jobs.held(),
+        // agents running now: deploy/sprites/box.sh up waits for none before it restarts this server
+        running: running.size,
       })
     }
     if (url.pathname === "/v1/files" && (req.method === "GET" || req.method === "PUT")) return await files(req, res, url)
@@ -316,6 +348,8 @@ server.on("upgrade", (req, socket, head) => {
   const env = own ? { ...withoutKeys(childEnv()), ...agent.env, ...RUN_DEFAULTS, ...own } : { ...childEnv(), ...agent.env }
   wss.handleUpgrade(req, socket, head, (ws) => {
     const child = spawn(agent.command, agent.args, { cwd: WORK, env, stdio: ["pipe", "pipe", "inherit"] })
+    running.add(child)
+    child.on("exit", () => running.delete(child))
     let buf = ""
     // ACP messages are newline-delimited JSON: split on \n only
     child.stdout.setEncoding("utf8").on("data", (c: string) => {
