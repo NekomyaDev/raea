@@ -7,4 +7,9 @@ if [ -n "${RAEA_CLOUD_GPU_URL:-}" ] && [ -n "${1:-}" ]; then
     *" $1 "*) exec node /opt/raea-cloud/server/offload.ts "$@" ;;
   esac
 fi
+# what's said, by the farm's Whisper (server/words.ts): raea's own transcriber is Mac only. `raea transcribe` is the name
+# agents reach for, so it's the same
+case "${1:-}" in
+  words|transcribe) exec node /opt/raea-cloud/server/words.ts "$@" ;;
+esac
 exec /opt/raea/bin/raea "$@"

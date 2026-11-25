@@ -171,6 +171,16 @@ async function main() {
     const missed = exit ? /(?:^|[\s/])(out\/[^\s:]+): No such file/m.exec(said) : null
     if (missed && excludes.includes("./out/*")) say(`${missed[1]} wasn't sent: out/ stays here, as it holds renders. Keep what a composition reads (words, data, stills it uses) in media/ or beside the composition`)
     process.exitCode = exit
+    // a video's words, heard as soon as it's back (words.ts): the cut is held to OUT.lines.txt when it has one, so a
+    // word clipped by a cut or faded under a crossfade is caught before anyone reviews it (11-25, Shane)
+    // the -o asked for (an output outside the project came back there by its move)
+    const oi = args.indexOf("-o")
+    const made = oi >= 0 ? path.resolve(process.cwd(), args[oi + 1] ?? "") : ""
+    if (!exit && /\.(mp4|mov|m4v|webm)$/i.test(made) && existsSync(made) && process.env.RAEA_CLOUD_WORDS !== "0") {
+      const { afterRender } = await import("./words.ts")
+      const code = await afterRender(made, say)
+      if (code) process.exitCode = code
+    }
   } finally {
     rmSync(tmp, { recursive: true, force: true })
   }

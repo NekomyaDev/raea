@@ -85,6 +85,8 @@ models = modal.Volume.from_name("raea-models", create_if_missing=True, version=2
 logs = modal.Dict.from_name("raea-farm-logs", create_if_missing=True)
 # the farm's token (RAEA_CLOUD_TOKEN), its own: a CPU box names it as RAEA_CLOUD_GPU_TOKEN
 secret = modal.Secret.from_name(os.environ.get("RAEA_FARM_SECRET", "raea-farm"))
+# OPENROUTER_API_KEY for /v1/words: raea cloud's own key, the one its library index transcribes with
+words_secret = modal.Secret.from_name(os.environ.get("RAEA_FARM_WORDS_SECRET", "raea-farm-words"))
 # a CPU render (the coordinator's sound pass) on lavapipe, with EGL's vendors hidden (docs/cloud.feature CL13)
 CPU_ENV = {"VK_DRIVER_FILES": "/usr/share/vulkan/icd.d/lvp_icd.json", "__EGL_VENDOR_LIBRARY_DIRS": "/nonexistent"}
 
@@ -294,7 +296,7 @@ def coordinate(id: str, args: list[str], opts: dict):
     log.end(code)
 
 
-@app.function(cpu=1, memory=4096, volumes={ROOT: vol}, secrets=[secret], timeout=3600)
+@app.function(cpu=1, memory=4096, volumes={ROOT: vol}, secrets=[secret, words_secret], timeout=3600)
 @modal.concurrent(max_inputs=32)
 @modal.asgi_app()
 def api():
@@ -372,6 +374,45 @@ def api():
     def health(req: Request):
         check(req)
         return {"raea": RAEA, "blender": BLENDER, "device": {"renders": "gpu", "name": f"raea on {'/'.join(RAEA_GPUS)}, Blender on {'/'.join(BLENDER_GPUS)}, up to {GPUS} at once"}, "farm": True, "jobs": []}
+
+    # what's said in a piece of sound, word by word, for a box's `raea words` (server/words.ts): a box has no
+    # transcriber of its own (raea's is parakeet-mlx, Mac only), so the same Whisper large-v3 on OpenRouter that raea
+    # cloud's library index uses (apps/app host/library/words.ts) hears it here. The body is one MP3 piece (16 kHz mono,
+    # at most 10 minutes; the box cuts the pieces), the answer its words in the piece's own seconds. 11-25, Shane: "give
+    # it whatever we use for indexing and libraries and sync", so agents check the words their cuts say.
+    @web.post("/v1/words")
+    async def words(req: Request):
+        import base64
+        import json as _json
+        import urllib.error
+        import urllib.request
+
+        check(req)
+        key = os.environ.get("OPENROUTER_API_KEY", "")
+        if not key:
+            raise HTTPException(503, "the farm has no OpenRouter key for words (Modal secret raea-farm-words)")
+        mp3 = await req.body()
+        if not mp3:
+            raise HTTPException(400, "the body is the sound: an MP3, 16 kHz mono, at most 10 minutes")
+        if len(mp3) > 24 << 20:
+            raise HTTPException(413, "a piece is at most 24 MB: send 10-minute pieces at 32 kb/s")
+        body = {"model": "openai/whisper-large-v3", "input_audio": {"data": base64.b64encode(mp3).decode(), "format": "mp3"}, "response_format": "verbose_json", "timestamp_granularities": ["word", "segment"]}
+        if req.query_params.get("language"):
+            body["language"] = req.query_params["language"]
+
+        def ask():
+            r = urllib.request.Request("https://openrouter.ai/api/v1/audio/transcriptions", data=_json.dumps(body).encode(), headers={"authorization": f"Bearer {key}", "content-type": "application/json", "x-title": "raea cloud words"})
+            try:
+                with urllib.request.urlopen(r, timeout=300) as f:
+                    return 200, _json.load(f)
+            except urllib.error.HTTPError as e:
+                return e.code, {"error": e.read()[:500].decode("utf8", "replace")}
+
+        code, got = await asyncio.to_thread(ask)
+        if code != 200:
+            raise HTTPException(502, f"OpenRouter's Whisper said {code}: {got.get('error', '')}")
+        ws = [{"text": w.get("word", "").strip(), "start": float(w.get("start", 0)), "end": float(w.get("end", w.get("start", 0)))} for w in got.get("words") or [] if w.get("word", "").strip()]
+        return {"model": "openai/whisper-large-v3", "duration": got.get("duration"), "text": got.get("text", ""), "words": ws}
 
     @web.post("/v1/jobs")
     async def start(req: Request):
