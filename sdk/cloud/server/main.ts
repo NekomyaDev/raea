@@ -349,10 +349,28 @@ server.on("upgrade", (req, socket, head) => {
   }
   const env = own ? { ...withoutKeys(childEnv()), ...agent.env, ...RUN_DEFAULTS, ...own } : { ...childEnv(), ...agent.env }
   wss.handleUpgrade(req, socket, head, (ws) => {
-    const child = spawn(agent.command, agent.args, { cwd: WORK, env, stdio: ["pipe", "pipe", "pipe"] })
+    // its own process group, so what it started (a render left running in the background) stops with it: a killed
+    // agent's renders went on as orphans, 4 GB of them on raea-2 (11-25)
+    const child = spawn(agent.command, agent.args, { cwd: WORK, env, stdio: ["pipe", "pipe", "pipe"], detached: true })
+    const stopAll = () => {
+      if (!child.pid) return
+      try {
+        process.kill(-child.pid, "SIGTERM")
+      } catch {}
+      setTimeout(() => {
+        try {
+          process.kill(-child.pid!, "SIGKILL")
+        } catch {}
+      }, 5000).unref()
+    }
     running.add(child)
     agentSockets.add(ws)
-    ws.on("close", () => agentSockets.delete(ws))
+    // a message every 20 s, so the socket is never idle: between raea cloud and the box it's closed after about two
+    // minutes without traffic, and an agent waiting on a long render sends nothing (11-25: five of StreetTalk's seven
+    // "socket closed" ends came 114-125 s into a silence). raea cloud skips notifications it doesn't know; the agent
+    // never sees it
+    const beat = setInterval(() => ws.readyState === ws.OPEN && ws.send('{"jsonrpc":"2.0","method":"_raea/keepalive"}'), 20_000)
+    ws.on("close", () => (agentSockets.delete(ws), clearInterval(beat)))
     child.on("exit", () => running.delete(child))
     // its stderr to the box's log as before, and along the socket as _raea/stderr notifications, so raea cloud keeps
     // it with the run's trace (runtrace.ts) instead of only on this box's disk (11-25: raea-1's logs died with it)
@@ -367,9 +385,9 @@ server.on("upgrade", (req, socket, head) => {
       for (let i; (i = buf.indexOf("\n")) >= 0; buf = buf.slice(i + 1)) if (i > 0) ws.send(buf.slice(0, i))
     })
     ws.on("message", (m) => child.stdin.write(m.toString() + "\n"))
-    ws.on("close", () => child.exitCode === null && child.kill("SIGTERM"))
+    ws.on("close", stopAll)
     child.on("error", (e) => ws.close(1011, `couldn't start ${agent.id}: ${e.message}`.slice(0, 120)))
-    child.on("exit", (code) => ws.close(1011, `${agent.id} exited ${code}`))
+    child.on("exit", (code) => (ws.close(1011, `${agent.id} exited ${code}`), stopAll()))
   })
 })
 
