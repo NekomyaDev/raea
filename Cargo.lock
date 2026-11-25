@@ -14044,6 +14044,7 @@ dependencies = [
  "anyhow",
  "cpal 0.15.3",
  "ort",
+ "raea-io-trace",
  "raea-sys-ml",
  "raea-sys-speech",
  "serde_json",

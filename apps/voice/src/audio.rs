@@ -108,7 +108,7 @@ pub fn microphone(tx: Sender<Vec<f32>>) -> anyhow::Result<cpal::Stream> {
         rs.push(&mono, &mut out);
         let _ = tx.send(out);
     };
-    let bad = said_once::<cpal::StreamError>("raea voice: the microphone");
+    let bad = raea_io_trace::once::said_once::<cpal::StreamError>("raea voice: the microphone");
     let stream = match cfg.sample_format() {
         cpal::SampleFormat::F32 => {
             dev.build_input_stream(&cfg.config(), move |d: &[f32], _: &cpal::InputCallbackInfo| take(mono(d, ch)), bad, None)
@@ -242,7 +242,7 @@ impl Speaker {
                 f.fill(ready.pop_front().unwrap_or(0.0));
             }
         };
-        let stream = dev.build_output_stream(&cfg.config(), play, said_once::<cpal::StreamError>("raea voice: the speakers"), None).map_err(|e| anyhow!("the speakers didn't open: {e}"))?;
+        let stream = dev.build_output_stream(&cfg.config(), play, raea_io_trace::once::said_once::<cpal::StreamError>("raea voice: the speakers"), None).map_err(|e| anyhow!("the speakers didn't open: {e}"))?;
         stream.play().map_err(|e| anyhow!("the speakers didn't start: {e}"))?;
         Ok(Speaker { line, rate, to, _stream: Some(stream) })
     }
@@ -284,45 +284,5 @@ mod tests {
         std::fs::remove_file(&f).unwrap();
         assert_eq!((rate, y.len()), (24_000, x.len()));
         assert!(x.iter().zip(&y).all(|(a, b)| (a - b).abs() < 1e-3));
-    }
-}
-
-/// A device's error said once, then only how often it came back (at its 10th, 100th, ... time, and never more than once
-/// a second): a failing ALSA device calls a stream's error callback without pause, and every call printed a line: #239's
-/// app.log reached 40 GB of one line in two days.
-fn said_once<E: std::fmt::Display>(what: &'static str) -> impl FnMut(E) + Send + 'static {
-    let mut seen = Repeats::default();
-    move |e| {
-        let m = e.to_string();
-        match seen.hit(&m, std::time::Instant::now()) {
-            Some(1) => eprintln!("{what}: {m}"),
-            Some(n) => eprintln!("{what}: {m} ({n} times now)"),
-            None => {}
-        }
-    }
-}
-
-/// Which of an error's repeats get said: `hit` answers with the count to print, or nothing.
-#[derive(Default)]
-struct Repeats {
-    last: String,
-    n: u64,
-    next: u64,
-    at: Option<std::time::Instant>,
-}
-
-impl Repeats {
-    fn hit(&mut self, m: &str, now: std::time::Instant) -> Option<u64> {
-        if m != self.last || self.n == 0 {
-            (self.last, self.n, self.next) = (m.to_string(), 0, 1);
-        }
-        self.n += 1;
-        let soon = self.at.is_some_and(|t| now.duration_since(t).as_secs() < 1);
-        if self.n < self.next || (soon && self.n > 1) {
-            return None;
-        }
-        self.next = self.n.saturating_mul(10);
-        self.at = Some(now);
-        Some(self.n)
     }
 }
