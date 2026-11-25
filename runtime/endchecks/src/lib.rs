@@ -5,9 +5,6 @@
 //! With them, each part held to its planned detail (raea-runtime-lod-plan; RAEA_LOD_CHECK=0 skips it): its own `lod`, else
 //! its name's on the plan above the composition (its plan.rs: `lod` on the brief's make objects, MK22).
 
-// where a render's composition is, for the plan above it (MK22)
-pub use raea_runtime_lod_plan::plan;
-
 use raea_core_facts::Finding;
 use raea_core_scene::Item;
 use serde_json::Value;
@@ -25,7 +22,7 @@ impl EndChecks {
     pub fn new(w: u32, h: u32, fps: f64) -> EndChecks {
         let on = |k: &str| std::env::var(k).as_deref() != Ok("0");
         let (clip, stage) = (on("RAEA_CLIP_CHECK").then(|| raea_sys_contact::Clipping::new(w, h, fps)), on("RAEA_STAGE_CHECK").then(|| raea_sys_stage::Staging::new(w, h, fps)));
-        let lod = on("RAEA_LOD_CHECK").then(|| raea_runtime_lod_plan::Lods::new(w, h, fps, plan::here(), false));
+        let lod = on("RAEA_LOD_CHECK").then(|| raea_runtime_lod_plan::Lods::new(w, h, fps, raea_runtime_lod_plan::plan::here(), false));
         EndChecks { clip, stage, lod, mounts: raea_sys_stage::Mounts::new(w, h), any: false, parts: 0 }
     }
 

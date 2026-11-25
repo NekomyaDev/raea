@@ -70,7 +70,6 @@ pub(crate) fn scene_program_to(js: &Path, dir: &Path, upto: i64) -> R<Option<rae
 /// A render's 3D rows as `scene_program_to` makes them, and the 3D parts that pass through each other on screen in
 /// `wanted` (one frame, a still; else all): said on stderr, and kept for the render's manifest (FED_CLIPPING).
 pub(crate) fn scene_program_checked(js: &Path, dir: &Path, upto: i64, wanted: Option<&[i64]>) -> R<Option<raea_core_program::ir::Program>> {
-    raea_runtime_endchecks::plan::at(dir);
     // stills: the frames asked for looked at first, each on its own (frames are pure). When none of them shows 3D,
     // their render needs no rows, and a 2D piece's still skips stepping its whole timeline (an 80 s film's still took
     // 16 s here, all of it the rows' pass finding no 3D)

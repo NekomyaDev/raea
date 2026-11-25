@@ -10,19 +10,18 @@ use std::time::SystemTime;
 
 use serde_json::Value;
 
-/// The composition's folder the next end checks plan from (`at`), and the last brief read: its path, when it last
-/// changed, and its levels.
-static DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
+/// The last brief read: its path, when it last changed, and its levels.
 static READ: Mutex<Option<(PathBuf, Option<SystemTime>, HashMap<String, u8>)>> = Mutex::new(None);
 
-/// Where the render's composition is: its end checks hold its parts to the plan above it.
-pub fn at(dir: &Path) {
-    let _ = DIR.lock().map(|mut d| d.replace(dir.to_path_buf()));
+/// The composition a command was given: its first word naming a .tsx or .jsx file (`raea render EDIT.tsx ...`).
+pub fn composition(words: impl IntoIterator<Item = String>) -> Option<PathBuf> {
+    words.into_iter().map(PathBuf::from).find(|w| w.extension().is_some_and(|x| x == "tsx" || x == "jsx"))
 }
 
-/// The plan's levels for the composition `at` named, none when no render said where it is.
+/// The plan's levels for the composition this process was asked to render, read from its own command line: a render's
+/// end checks are made deep in the export, which isn't told where the composition is. None when it names none.
 pub fn here() -> HashMap<String, u8> {
-    let dir = DIR.lock().unwrap().clone();
+    let dir = composition(std::env::args().skip(1)).and_then(|c| std::path::absolute(c).ok()).and_then(|c| c.parent().map(Path::to_path_buf));
     dir.map(|d| lods(&d)).unwrap_or_default()
 }
 
@@ -82,6 +81,13 @@ mod tests {
         // as `raea spec brief.ts --as brief` prints it: the brief itself, every field given, a level left out null
         let printed = json!({"title": "Kiosk square", "make": {"kind": "scene", "objects": [{"id": "kiosk", "lod": 3, "hero": null}, {"id": "desk", "lod": null}]}});
         assert_eq!(of_brief(&printed), HashMap::from([("kiosk".to_string(), 3)]));
+    }
+
+    #[test]
+    fn the_composition_is_the_commands_first_tsx() {
+        let words = |w: &[&str]| composition(w.iter().map(|s| s.to_string()));
+        assert_eq!(words(&["render", "shots/walk.tsx", "-o", "out/walk.mp4"]), Some(PathBuf::from("shots/walk.tsx")));
+        assert_eq!(words(&["check", "out/walk.mp4"]), None);
     }
 
     #[test]

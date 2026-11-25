@@ -267,8 +267,6 @@ pub(crate) fn is_game(js: &Path) -> bool {
 }
 
 pub(crate) fn render_bundle_with(js: &Path, dir: &Path, out: &Path, wanted: Option<Vec<i64>>, fed: bool, scene: Option<raea_core_program::ir::Program>, live3d: bool) -> R<String> {
-    // the end checks hold the parts to the plan above this composition (`lod` on brief.ts's make objects, MK22)
-    raea_runtime_endchecks::plan::at(dir);
     edit_dir(dir);
     raea_gpu_device::check::scene_black(Some(false));
     raea_runtime_react::native::rendering_in(dir);
