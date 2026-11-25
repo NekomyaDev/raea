@@ -172,5 +172,33 @@ if [ -f "$check/raea/bin/raea.exe" ]; then
   done
   "$check/raea/bin/uv.exe" --version 2>&1 | grep -q '^uv ' || fail "bin/uv.exe doesn't run"
 fi
+# RAEA_CHECK_HARD=1 (tools/release-machines.sh, on real machines: a PC's own GPU, the Linux box): what reports from
+# other systems needed and a runner's one pass doesn't show.
+if [ "${RAEA_CHECK_HARD:-}" = 1 ]; then
+  # a project in a folder with a space and letters outside ASCII, as a person's own folders have ("C:\Users\José M\"):
+  # the page, its 3D, and an MP4 of it (#40-#42, #78, #169: paths read as URLs, as \\?\ paths, with backslashes kept)
+  hard="$check/José's work/proj é"
+  mkdir -p "$hard" && cp "$check/p/hello.tsx" "$check/3d/cube.tsx" "$hard/"
+  (cd "$hard" && RAEA_NO_TREE=1 RUST_BACKTRACE=1 "$raea" render hello.tsx --frame 3 -o "héllo out.png" > render.log 2>&1 && [ -s "héllo out.png" ]) || { tail -20 "$hard/render.log" >&2; fail "no frame from a folder with a space and letters outside ASCII"; }
+  ! grep -q "is all black" "$hard/render.log" || fail "the frame from a folder with a space and letters outside ASCII is all black"
+  # 3D on this machine's own GPU: Windows too, which a runner (WARP, lavapipe) never draws on (#66: an AMD GPU drew nothing)
+  (cd "$hard" && RAEA_NO_TREE=1 RUST_BACKTRACE=1 "$raea" render cube.tsx --frame 3 -o cube.png > cube.log 2>&1 && [ -s cube.png ]) || { tail -20 "$hard/cube.log" >&2; fail "no 3D frame on this machine's GPU"; }
+  ! grep -q "is all black" "$hard/cube.log" || fail "the 3D frame on this machine's GPU is all black"
+  (cd "$hard" && RAEA_NO_TREE=1 RUST_BACKTRACE=1 "$raea" render hello.tsx -o hello.mp4 > mp4.log 2>&1 && [ -s hello.mp4 ]) || { tail -20 "$hard/mp4.log" >&2; fail "no MP4 from a folder with a space and letters outside ASCII"; }
+  # the same render over and over: a crash one run in many is still a crash (#65: a segfault at exit, 1 run in 160, after
+  # the frames were written), so every run's exit is read, not only its file
+  n=${RAEA_CHECK_REPEATS:-40}
+  for i in $(seq "$n"); do
+    (cd "$hard" && RAEA_NO_TREE=1 "$raea" render cube.tsx --frame $((i % 9)) -o "again.png" > again.log 2>&1) || { s=$?; tail -20 "$hard/again.log" >&2; fail "run $i of $n of the same 3D render ended with exit $s"; }
+  done
+  # two renders at once, each in its own folder: neither takes the other's work folder away (#29)
+  mkdir -p "$hard/a" "$hard/b" && cp "$hard/hello.tsx" "$hard/a/" && cp "$hard/hello.tsx" "$hard/b/"
+  (cd "$hard/a" && RAEA_NO_TREE=1 "$raea" render hello.tsx -o out.mp4 > render.log 2>&1) & pa=$!
+  (cd "$hard/b" && RAEA_NO_TREE=1 "$raea" render hello.tsx -o out.mp4 > render.log 2>&1) & pb=$!
+  wait $pa || { tail -20 "$hard/a/render.log" >&2; fail "one of two renders running at once failed"; }
+  wait $pb || { tail -20 "$hard/b/render.log" >&2; fail "one of two renders running at once failed"; }
+  [ -s "$hard/a/out.mp4" ] && [ -s "$hard/b/out.mp4" ] || fail "two renders at once didn't both write their MP4"
+  echo "release: the hard pass too: a folder with a space and letters outside ASCII, 3D on this GPU, $n runs of one render, two at once"
+fi
 echo "release: $archive checked: an unpacked copy rendered a frame and checked an app on both targets with RAEA_NO_TREE=1"
 rm -rf "$check"

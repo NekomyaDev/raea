@@ -206,6 +206,12 @@ for md in "$stage"/share/raea/skills/*/SKILL.md; do
   perl -0pi -e 's/\A---\n(.*?)\n---\n/"---\n" . join("\n", grep { !\/^version:\/ } split(\/\n\/, $1)) . "\nversion: '"$version"'\n---\n"/se' "$md"
 done
 if [ $platform = windows-x86_64 ]; then
+  # RAEA_WIN_SIGN=1: raea's own programs signed before they're zipped (tools/release/win-sign.sh, #221). Off, the zip is
+  # as it was: unsigned, which Smart App Control blocks on a PC that has it on
+  if [ "${RAEA_WIN_SIGN:-}" = 1 ]; then
+    bash "$root/tools/release/win-sign.sh" "$stage/bin/raea.exe" "$stage/bin/raea_bundle.dll" "$stage/bin/raea-perceive.exe" "$stage/bin/raea-rune-host.exe" "$stage/bin/raea-page-host.exe" ||
+      { echo "release.sh: raea's Windows programs couldn't be signed (RAEA_WIN_SIGN=1)" >&2; exit 1; }
+  fi
   archive=$name.zip
   rm -f "$out/$archive"
   (cd "$(dirname "$stage")" && 7z a -tzip -bso0 -bsp0 "$out/$archive" raea)

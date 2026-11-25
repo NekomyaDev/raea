@@ -223,6 +223,9 @@ jobs:
   # (tools/release/win-bundle.sh), as Microsoft documents for app-local deployment.
   windows:
     runs-on: ${{ (vars.RELEASE_WINDOWS_RUNNER && fromJSON(vars.RELEASE_WINDOWS_RUNNER)) || 'windows-latest' }}
+    # the signing identity's federated credential trusts this repository's environment "signing" and nothing else
+    # (Azure app raea-release-signing); with no identity set there is no environment, and the zip is unsigned
+    environment: ${{ vars.AZURE_SIGN_CLIENT_ID != '' && 'signing' || '' }}
     timeout-minutes: 350
     env:
       # the compile cache, as build's
@@ -352,9 +355,24 @@ jobs:
         run: bash tools/release/lavapipe.sh
       - name: Where the skills gate passed
         run: bash tools/release/skills-passed.sh "$TAG" "${{ inputs.skills_passed }}"
+      # raea's own Windows programs signed (#221), once the repository has the signing identity: the variables
+      # AZURE_SIGN_CLIENT_ID, AZURE_SIGN_TENANT_ID and AZURE_SIGN_SUBSCRIPTION_ID name an Azure app whose federated
+      # credential trusts this workflow and which holds the Artifact Signing Certificate Profile Signer role on the
+      # account (no secret is stored: the job's own token is exchanged). Without them the zip is unsigned, as before
+      - name: Sign in to Azure for signing
+        if: ${{ vars.AZURE_SIGN_CLIENT_ID != '' }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_SIGN_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_SIGN_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SIGN_SUBSCRIPTION_ID }}
+      - name: jsign (signs raea's programs)
+        if: ${{ vars.AZURE_SIGN_CLIENT_ID != '' }}
+        run: choco install jsign -y --no-progress
       - name: Pack and check (tools/release.sh)
         env:
           RAEA_CHECK_DIR: ${{ runner.temp }}/release-check
+          RAEA_WIN_SIGN: ${{ vars.AZURE_SIGN_CLIENT_ID != '' && '1' || '' }}
         run: bash tools/release.sh "${TAG#v}" target/dist HEAD
       # live play on Windows (PT20 left it unproven): bevy-ts's play cases, `play --offscreen` with an input script and
       # a snapshot's pixels probed, run by the raea just built; check.sh reads the pixels with ImageMagick, which the
