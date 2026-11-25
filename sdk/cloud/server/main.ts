@@ -41,6 +41,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import path from "node:path"
 import { WebSocketServer } from "ws"
 import { installed, spawnFor } from "./agents.ts"
+import { guard } from "./memguard.ts"
 import { device } from "./gpu.ts"
 import * as jobs from "./jobs.ts"
 import { checkClaude, finishClaudeSignIn, startClaudeSignIn } from "./claude-token.ts"
@@ -315,6 +316,7 @@ const server = createServer(async (req, res) => {
 
 // the WebSocket upgrade checks the token before a socket opens
 const wss = new WebSocketServer({ noServer: true })
+const agentSockets = new Set<import("ws").WebSocket>()
 server.on("upgrade", (req, socket, head) => {
   const url = new URL(req.url ?? "/", "http://raea-cloud")
   // a Google sign-in's own browser (google-screen.ts): its VNC stream, both ways, as binary frames
@@ -349,6 +351,8 @@ server.on("upgrade", (req, socket, head) => {
   wss.handleUpgrade(req, socket, head, (ws) => {
     const child = spawn(agent.command, agent.args, { cwd: WORK, env, stdio: ["pipe", "pipe", "pipe"] })
     running.add(child)
+    agentSockets.add(ws)
+    ws.on("close", () => agentSockets.delete(ws))
     child.on("exit", () => running.delete(child))
     // its stderr to the box's log as before, and along the socket as _raea/stderr notifications, so raea cloud keeps
     // it with the run's trace (runtrace.ts) instead of only on this box's disk (11-25: raea-1's logs died with it)
@@ -370,6 +374,13 @@ server.on("upgrade", (req, socket, head) => {
 })
 
 mkdirSync(WORK, { recursive: true })
+// the box kept from running out of memory (memguard.ts): what it stops is said in the box's log and in every agent's
+// trace (_raea/stderr), where a cut-off run's reason is read
+if (existsSync("/proc/meminfo") && process.env.RAEA_CLOUD_MEMGUARD !== "0")
+  guard((line) => {
+    process.stderr.write(line + "\n")
+    for (const ws of agentSockets) if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ jsonrpc: "2.0", method: "_raea/stderr", params: { text: line + "\n" } }))
+  })
 server.listen(PORT, () => {
   const d = device(childEnv())
   const gpu = process.env.RAEA_CLOUD_GPU_URL
