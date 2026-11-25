@@ -11,7 +11,7 @@ use bevy_ecs::query::Has;
 use bevy_ecs::{
     component::Component,
     entity::Entity,
-    system::{Commands, Query, Res},
+    system::{Commands, Local, Query, Res},
 };
 #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
 use bevy_image::ToExtents;
@@ -77,11 +77,18 @@ struct SolariLightingUniforms {
     reset: u32,
     // raea: SolariLighting::first_bounce_probability, padded to keep the uniform a multiple of 16 bytes
     first_bounce_probability: f32,
-    pad: [u32; 3],
+    // raea: SolariLighting::world_cache_steady (a bake's cells keep their whole history and draw new random numbers
+    // each update in a frame)
+    world_cache_steady: u32,
+    // raea (11-25): ReSTIR's spatial reuse radius in pixels, Bevy's 30 unless RAEA_SOLARI_SPATIAL_RADIUS says; a 30 px
+    // disc is the size of the patches MALL RAT's held frames show (raea light steady)
+    spatial_reuse_radius: f32,
+    // raea (11-25): SolariLighting::paths_per_pixel (RAEA_SOLARI_PATHS overrides it)
+    paths_per_pixel: u32,
 }
 
 impl SolariLightingUniforms {
-    fn new(settings: &SolariLighting, frame_count: u32, force_reset: bool) -> Self {
+    fn new(settings: &SolariLighting, frame_count: u32, force_reset: bool, still: bool) -> Self {
         Self {
             confidence_weight_cap: settings.confidence_weight_cap,
             primary_di_samples: settings.primary_di_samples,
@@ -96,7 +103,10 @@ impl SolariLightingUniforms {
             frame_rng: frame_count.wrapping_mul(5782582),
             reset: (settings.reset || force_reset) as u32,
             first_bounce_probability: settings.first_bounce_probability.clamp(0.05, 1.0),
-            pad: [0; 3],
+            // bit 1: a steady cache with the camera held (world_cache_query.wesl world_cache_still)
+            world_cache_steady: (settings.world_cache_steady || steady_override()) as u32 | ((((settings.world_cache_steady || steady_override()) && still) as u32) << 1),
+            spatial_reuse_radius: spatial_reuse_radius(),
+            paths_per_pixel: paths_override().unwrap_or(settings.paths_per_pixel).clamp(1, 16),
         }
     }
 }
@@ -125,6 +135,30 @@ pub struct SolariLightingResources {
     pub world_cache: Buffer,
     pub world_cache_active_cells_dispatch: Buffer,
     pub view_size: UVec2,
+    /// raea: the baked cache file this view's world cache holds (SolariLighting::world_cache_load), "" for none
+    pub world_cache_loaded: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
+/// raea: read a baked world cache (SolariLighting::world_cache_save) into a view's cache buffer. A file of another size
+/// (another build's cache layout) is refused, said once, and the view keeps its live cache.
+fn load_world_cache(render_queue: &RenderQueue, buffer: &Buffer, path: &str) -> bool {
+    match std::fs::read(path) {
+        Ok(bytes) if bytes.len() as u64 == WORLD_CACHE_BUFFER_SIZE => {
+            render_queue.write_buffer(buffer, 0, &bytes);
+            let at = WORLD_CACHE_ACTIVE_CELLS_COUNT_OFFSET as usize;
+            let cells = u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+            eprintln!("raea: the world cache baked in {path} read ({cells} cells); held while it renders");
+            true
+        }
+        Ok(bytes) => {
+            eprintln!("raea: REFUSED the baked world cache {path}: {} bytes, this build's cache is {WORLD_CACHE_BUFFER_SIZE} (bake it again with this raea); the live cache is used", bytes.len());
+            false
+        }
+        Err(e) => {
+            eprintln!("raea: REFUSED the baked world cache {path}: {e}; the live cache is used");
+            false
+        }
+    }
 }
 
 pub struct SolariReservoirBuffers {
@@ -151,6 +185,9 @@ pub fn prepare_solari_lighting_resources(
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
     frame_count: Res<FrameCount>,
+    // raea (11-25): each view's camera last frame, so the cache knows when it holds still (world_cache_still)
+    views: Query<&bevy_render::view::ExtractedView>,
+    mut last_camera: Local<std::collections::HashMap<Entity, bevy_math::Mat4>>,
     // raea: the guides for a denoiser other than DLSS-RR (guides.rs)
     guides: Option<Res<super::guides::SolariGuideBuffers>>,
     mut commands: Commands,
@@ -179,8 +216,13 @@ pub fn prepare_solari_lighting_resources(
         let reusable = solari_lighting_resources.filter(|r| {
             r.view_size == view_size && r.reservoirs.is_some() == solari_lighting.restir
         });
+        let camera_now = views.get(entity).map(|v| v.world_from_view.to_matrix()).ok();
+        let still = camera_now.is_some() && last_camera.get(&entity).copied() == camera_now;
+        if let Some(m) = camera_now {
+            last_camera.insert(entity, m);
+        }
         let uniforms =
-            SolariLightingUniforms::new(solari_lighting, frame_count.0, reusable.is_none());
+            SolariLightingUniforms::new(solari_lighting, frame_count.0, reusable.is_none(), still);
 
         if let Some(solari_lighting_resources) = reusable {
             // The constants uniform can change every frame, so always upload it.
@@ -189,6 +231,12 @@ pub fn prepare_solari_lighting_resources(
                 0,
                 bytemuck::bytes_of(&uniforms),
             );
+            // raea: a baked cache named for the first time, or another one (a cut between two bakes)
+            let mut loaded = solari_lighting_resources.world_cache_loaded.lock().unwrap();
+            if !solari_lighting.world_cache_load.is_empty() && *loaded != solari_lighting.world_cache_load {
+                load_world_cache(&render_queue, &solari_lighting_resources.world_cache, &solari_lighting.world_cache_load);
+                *loaded = solari_lighting.world_cache_load.clone();
+            }
             continue;
         }
 
@@ -232,9 +280,15 @@ pub fn prepare_solari_lighting_resources(
         let world_cache = render_device.create_buffer(&BufferDescriptor {
             label: Some("solari_lighting_world_cache"),
             size: WORLD_CACHE_BUFFER_SIZE,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // raea: a baked cache, read in place of the live one's empty start
+        let mut world_cache_loaded = String::new();
+        if !solari_lighting.world_cache_load.is_empty() {
+            load_world_cache(&render_queue, &world_cache, &solari_lighting.world_cache_load);
+            world_cache_loaded = solari_lighting.world_cache_load.clone();
+        }
 
         let world_cache_active_cells_dispatch = render_device.create_buffer(&BufferDescriptor {
             label: Some("solari_lighting_world_cache_active_cells_dispatch"),
@@ -251,6 +305,7 @@ pub fn prepare_solari_lighting_resources(
             world_cache,
             world_cache_active_cells_dispatch,
             view_size,
+            world_cache_loaded: std::sync::Arc::new(std::sync::Mutex::new(world_cache_loaded)),
         });
         if guides.is_some() {
             commands
@@ -349,4 +404,23 @@ pub fn prepare_solari_lighting_resources(
                 });
         }
     }
+}
+
+/// raea: ReSTIR's spatial reuse radius in pixels (restir.wesl), 30 as Bevy has it unless RAEA_SOLARI_SPATIAL_RADIUS says
+fn spatial_reuse_radius() -> f32 {
+    static R: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *R.get_or_init(|| std::env::var("RAEA_SOLARI_SPATIAL_RADIUS").ok().and_then(|v| v.parse::<f32>().ok()).filter(|v| *v >= 1.0).unwrap_or(30.0))
+}
+
+/// raea: RAEA_SOLARI_PATHS, paths a pixel for every camera whatever the composition asks (a sweep)
+fn paths_override() -> Option<u32> {
+    static P: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *P.get_or_init(|| std::env::var("RAEA_SOLARI_PATHS").ok().and_then(|v| v.parse::<u32>().ok()).filter(|v| *v >= 1))
+}
+
+/// raea: RAEA_SOLARI_STEADY=1, the steady cache for every camera whatever the composition asks (a check on a scene that
+/// doesn't set cache.steady)
+fn steady_override() -> bool {
+    static S: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *S.get_or_init(|| std::env::var("RAEA_SOLARI_STEADY").as_deref() == Ok("1"))
 }

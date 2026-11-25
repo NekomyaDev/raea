@@ -163,6 +163,11 @@ struct EnvironmentMapLight {
     // raea: the sky portals (bind_group.rs pack_sky_portals): three rows each, the corner and the area, then the edges
     portal_count: u32,
     portals: array<vec4<f32>, 24>,
+    // raea (11-25): light selection's fixed share for the sky (directional lights and sky portals), and those sources'
+    // indices in light_sources, ascending (bind_group.rs sky_light_ids); a share of 0 picks every source alike, by count
+    sky_share: f32,
+    sky_count: u32,
+    sky_ids: array<vec4<u32>, 4>,
 }
 
 // raea: a sky portal, the parallelogram corner + a u + b v for a and b from 0 to 1; normal: cross(u, v), unit length

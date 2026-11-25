@@ -4,7 +4,7 @@ use super::{
 };
 use crate::scene::extract::ExtractedEnvironmentMapLight;
 use bevy_ecs::system::{Res, ResMut};
-use bevy_math::{Mat3, Vec3, Vec4};
+use bevy_math::{Mat3, UVec4, Vec3, Vec4};
 use bevy_pbr::DfgLut;
 use bevy_render::{
     render_asset::RenderAssets,
@@ -328,9 +328,11 @@ pub fn prepare_raytracing_scene_bind_group(
         ));
 
     let any_alpha = !bindings.assets.alpha_materials.is_empty() || alpha_pass_always();
+    let sky_ids = bindings.lights.index.sky_ids();
     let environment_map_light = prepare_environment_map_light(
         &extracted_environment_map_light,
         any_alpha,
+        &sky_ids,
         &texture_assets,
         &fallback_texture,
         &mut bindings.environment_map_light_buffer,
@@ -369,6 +371,35 @@ pub struct GpuEnvironmentMapLight {
     // raea: the sky portals (SkyPortals), three rows each: the corner and the area, then the two edges
     pub portal_count: u32,
     pub portals: [Vec4; 3 * crate::scene::MAX_SKY_PORTALS],
+    // raea (11-25): light selection's fixed share for the sky's sources and their indices (sampling.wesl pick_light)
+    pub sky_share: f32,
+    pub sky_count: u32,
+    pub sky_ids: [UVec4; MAX_SKY_IDS / 4],
+}
+
+/// raea: the most sky sources (directional lights and sky portals) light selection gives a share; past it, every
+/// source alike as upstream
+pub const MAX_SKY_IDS: usize = 16;
+
+/// raea (11-25): the part of light selection's samples the sky's sources share (sampling.wesl pick_light), 0 unless
+/// RAEA_SOLARI_SKY_SHARE says (0: every source alike, by count, as upstream)
+fn sky_share() -> f32 {
+    static SHARE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *SHARE.get_or_init(|| {
+        std::env::var("RAEA_SOLARI_SKY_SHARE").ok().and_then(|v| v.parse::<f32>().ok()).filter(|v| (0.0..1.0).contains(v)).unwrap_or(0.0)
+    })
+}
+
+/// raea: the sky's sources as the uniform holds them: none (every source alike) when there are more than MAX_SKY_IDS
+pub fn pack_sky_ids(ids: &[u32]) -> (f32, u32, [UVec4; MAX_SKY_IDS / 4]) {
+    let mut out = [UVec4::ZERO; MAX_SKY_IDS / 4];
+    if ids.is_empty() || ids.len() > MAX_SKY_IDS {
+        return (0.0, 0, out);
+    }
+    for (i, id) in ids.iter().enumerate() {
+        out[i / 4][i % 4] = *id;
+    }
+    (sky_share(), ids.len() as u32, out)
 }
 
 impl Default for GpuEnvironmentMapLight {
@@ -382,6 +413,9 @@ impl Default for GpuEnvironmentMapLight {
             any_alpha: 0,
             portal_count: 0,
             portals: [Vec4::ZERO; 3 * crate::scene::MAX_SKY_PORTALS],
+            sky_share: 0.0,
+            sky_count: 0,
+            sky_ids: [UVec4::ZERO; MAX_SKY_IDS / 4],
         }
     }
 }
@@ -415,6 +449,7 @@ fn alpha_pass_always() -> bool {
 fn prepare_environment_map_light<'a>(
     extracted_environment_map_light: &ExtractedEnvironmentMapLight,
     any_alpha: bool,
+    sky_ids: &[u32],
     texture_assets: &'a RenderAssets<GpuImage>,
     fallback_texture: &'a FallbackImage,
     buffer: &mut StorageBuffer<GpuEnvironmentMapLight>,
@@ -440,6 +475,9 @@ fn prepare_environment_map_light<'a>(
                 any_alpha: 0,
                 portal_count: 0,
                 portals: [Vec4::ZERO; 3 * crate::scene::MAX_SKY_PORTALS],
+                sky_share: 0.0,
+                sky_count: 0,
+                sky_ids: [UVec4::ZERO; MAX_SKY_IDS / 4],
             },
         ),
         None => (
@@ -449,6 +487,7 @@ fn prepare_environment_map_light<'a>(
     };
 
     uniform.any_alpha = any_alpha as u32;
+    (uniform.sky_share, uniform.sky_count, uniform.sky_ids) = pack_sky_ids(sky_ids);
     if cubemap.is_some() {
         (uniform.portal_count, uniform.portals) = pack_sky_portals(&extracted_environment_map_light.portals);
     }

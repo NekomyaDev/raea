@@ -45,6 +45,17 @@ pub struct LightIndex {
 }
 
 impl LightIndex {
+    /// raea (11-25): the indices of the sky's sources (directional lights and sky portals), ascending, for light
+    /// selection's fixed sky share (sampling.wesl pick_light)
+    pub fn sky_ids(&self) -> Vec<u32> {
+        self.ids
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| !matches!(id, LightSourceId::EmissiveMesh(_)))
+            .map(|(i, _)| i as u32)
+            .collect()
+    }
+
     pub fn len(&self) -> usize {
         self.ids.len()
     }

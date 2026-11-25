@@ -1,5 +1,5 @@
 import package::realtime::gbuffer_utils::gpixel_resolve;
-import package::realtime::initial_path::generate_initial_path;
+import package::realtime::initial_path::generate_initial_paths;
 import package::realtime::bindings::{constants, depth_buffer, gbuffer, view, view_output};
 import package::scene::bindings::RAY_T_MAX;
 import package::realtime::world_cache_query::{query_world_cache, WORLD_CACHE_CELL_LIFETIME};
@@ -18,7 +18,8 @@ fn initial_and_shade(@builtin(workgroup_id) workgroup_id: vec3<u32>, @builtin(gl
 
     let surface = gpixel_resolve(textureLoad(gbuffer, global_id.xy, 0), depth, global_id.xy, view.main_pass_viewport.zw, view.world_from_clip);
 
-    let path = generate_initial_path(surface.world_position, surface.world_normal, surface.material, workgroup_id.xy, global_id.xy, &rng);
+    // raea: SolariLighting::paths_per_pixel paths, merged (initial_path.wesl generate_initial_paths)
+    let path = generate_initial_paths(surface.world_position, surface.world_normal, surface.material, workgroup_id.xy, global_id.xy, &rng);
 
     var pixel_color = path.radiance;
     pixel_color += surface.material.emissive;

@@ -351,7 +351,7 @@ pub fn light(args: &[String]) -> R<String> {
     // won't be the same the next time
     let moved: Vec<String> = reports.iter().flat_map(|r| r["paths"].as_object().into_iter().flatten().filter(|(_, p)| p["steady"]["steady"] == json!(false)).map(|(path, p)| format!("{} on {path}: {}", r["name"].as_str().unwrap_or(""), steady::line(&p["steady"])))).collect();
     if !moved.is_empty() {
-        return Err(format!("{said}\nthe light doesn't hold still ({}). {}", moved.join("; "), steady::WHY));
+        return Err(format!("{said}\nthe light boils ({}). {}", moved.join("; "), steady::WHY));
     }
     Ok(said)
 }

@@ -57,9 +57,12 @@ struct SolariLightingSettings {
     reset: u32,
     // raea: SolariLighting::first_bounce_probability (prepare.rs), and padding
     first_bounce_probability: f32,
-    pad0: u32,
-    pad1: u32,
-    pad2: u32,
+    // raea: bit 0 SolariLighting::world_cache_steady, bit 1 that and the camera where it was last frame (prepare.rs)
+    world_cache_steady: u32,
+    // raea (11-25): ReSTIR's spatial reuse radius in pixels (prepare.rs, RAEA_SOLARI_SPATIAL_RADIUS; Bevy's 30)
+    spatial_reuse_radius: f32,
+    // raea (11-25): SolariLighting::paths_per_pixel, initial paths traced a pixel a frame (initial_path.wesl)
+    paths_per_pixel: u32,
 }
 
 /// Don't adjust the size of this struct without also adjusting `prepare::RESOLVED_LIGHT_SAMPLE_STRUCT_SIZE`.

@@ -21,6 +21,9 @@ export interface SolariLightingProps {
   /** the chance a pixel traces its first bounce this frame, its light divided by it (Russian roulette): 0.5 halves the
    * bounce's tracing, most of a dense forest's (1, every pixel every frame) */
   firstBounce?: number;
+  /** initial paths a pixel a frame (1 to 16, 1 by default): N cut the noise of one path N times, at N times its rays.
+   * A sunlit room seen through bounces (MALL RAT's court) needs 4 or more to hold still */
+  paths?: number;
   /** Solari's world cache, the bounce light it keeps in cells across the scene */
   cache?: {
     /** frames a cell's light is gathered over: steadier and slower to follow a change (Bevy's 32) */
@@ -32,9 +35,21 @@ export interface SolariLightingProps {
     /** about how many cells are updated a frame (40000) */
     updates?: number;
     /** a nearest cell's size, metres (0.15) */
+    /** keep each cell's whole history (up to frames), not cut short when its own noise reads as the light changing */
+    steady?: boolean;
+    /** cache updates a frame (1): more converge faster */
+    iterations?: number;
     cellSize?: number;
     /** how fast cells grow with distance from the camera (15) */
     lodScale?: number;
+    /** bake the cache (docs/solari-efficiency.md): render the take's own camera path with it and every cell it meets
+     * stays, keeps its whole history (set `frames` long, 4096 or more) and updates `iterations` times a frame (1).
+     * `save` names the file to write this frame: give it a few frames before the bake's last */
+    bake?: { iterations?: number; save?: string };
+    /** a baked cache's file (`bake.save`), read and held while the shot renders: no updates, nothing ages out, a cut
+     * doesn't empty it. Another name later in the shot reads that one (a take whose lights change at a cut). Its sets
+     * and lights must be the bake's: what moved since is lit as the bake saw it */
+    load?: string;
   };
   /** draw the view at this fraction of its size a side (a third to 1) and let MetalFX's temporal scaler bring it up to
    * the full size, so a game traces fewer pixels: 0.67 traces 45% of them (RT9). On the Mac; elsewhere it draws at the
@@ -218,6 +233,8 @@ export function SolariLighting(p: SolariLightingProps = {}) {
   field("secondarySamples", "secondary_di_samples", p.secondarySamples, true);
   if (p.firstBounce !== undefined && !(p.firstBounce > 0 && p.firstBounce <= 1)) throw new RangeError(`SolariLighting: firstBounce is a chance above 0, up to 1, got ${p.firstBounce}`);
   field("firstBounce", "first_bounce_probability", p.firstBounce);
+  if (p.paths !== undefined && !(Number.isInteger(p.paths) && p.paths >= 1 && p.paths <= 16)) throw new RangeError(`SolariLighting: paths is a whole number from 1 to 16, got ${p.paths}`);
+  field("paths", "paths_per_pixel", p.paths, true);
   const c = p.cache ?? {};
   field("cache.frames", "world_cache_max_temporal_samples", c.frames);
   field("cache.lightSamples", "world_cache_direct_light_sample_count", c.lightSamples, true);
@@ -225,6 +242,19 @@ export function SolariLighting(p: SolariLightingProps = {}) {
   field("cache.updates", "world_cache_cell_updates_soft_target", c.updates, true);
   field("cache.cellSize", "world_cache_position_base_cell_size", c.cellSize);
   field("cache.lodScale", "world_cache_position_lod_scale", c.lodScale);
+  // steady: the cache's light kept over its whole history (up to cache.frames), never cut short when a cell's own noise
+  // reads as change; iterations: that many cache updates a frame. Light that holds still converges instead of crawling
+  // (11-25, MALL RAT's splotches); light that moves (a power cut) lags by the history, so set frames to what it can bear
+  if (c.steady) value.world_cache_steady = true;
+  field("cache.iterations", "world_cache_update_iterations", c.iterations, true);
+  if (c.bake) {
+    value.world_cache_keep = true;
+    value.world_cache_steady = true;
+    field("cache.bake.iterations", "world_cache_update_iterations", c.bake.iterations ?? 1, true);
+  }
+  if (c.bake && c.load) throw new RangeError("SolariLighting: cache.bake and cache.load together: a bake gathers the cache, a load holds one already baked");
+  // both always written: a value left out may keep the last frame's, and a save that stuck would write every frame
+  if (c.bake || c.load) { value.world_cache_save = c.bake?.save ?? ""; value.world_cache_load = c.load ?? ""; }
   const settings = solariSettings(p);
   const constants = solariConstants(p.constants);
   const lighting = <BevyComponent type="bevy_solari::realtime::SolariLighting" value={value} />;

@@ -5,7 +5,7 @@ import bevy_render::utils::octahedral_encode;
 import package::scene::brdf::{brdf_pdf, evaluate_and_sample_brdf, evaluate_brdf, EvaluateAndSampleBrdfResult, F_AB};
 import package::realtime::presample_light_tiles::unpack_resolved_light_sample;
 import package::realtime::bindings::{empty_reservoir, light_tile_resolved_samples, light_tile_samples, Reservoir, constants, view};
-import package::scene::sampling::{calculate_resolved_light_contribution, isinf, LightSample, NULL_LIGHT_ID, power_heuristic, trace_visibility, sample_environment_map_light_and_sun, sky_portal_mis_weight};
+import package::scene::sampling::{calculate_resolved_light_contribution, emissive_light_pmf, isinf, LightSample, NULL_LIGHT_ID, power_heuristic, trace_visibility, sample_environment_map_light_and_sun, sky_portal_mis_weight};
 import package::scene::bindings::{face_hit, light_sources, MIRROR_ROUGHNESS_THRESHOLD, RAY_T_MAX, RAY_T_MIN, resolve_ray_hit_full, ResolvedMaterial, ResolvedRayHitFull, trace_ray};
 import package::realtime::world_cache_query::{get_cell_size, query_world_cache, query_world_cache_found, WORLD_CACHE_CELL_LIFETIME};
 
@@ -30,6 +30,44 @@ const GLOSSY_NEE_FLOOR = 0.25;
 struct InitialSamplingResult {
     @if(RESTIR) reservoir: Reservoir,
     radiance: vec3<f32>,
+    // raea: the target function of the reservoir's chosen candidate (its weight is the contribution weight times it)
+    @if(RESTIR) chosen_target: f32,
+}
+
+// raea (11-25): constants.paths_per_pixel paths from the same G-buffer surface. Their directly shaded light is
+// averaged; their reservoirs are resampled into one, path i chosen in proportion to its weight w_i (its contribution
+// weight times its candidate's target), the result's contribution weight (sum w_i / N) / target. One path is upstream's
+fn generate_initial_paths(world_position: vec3<f32>, world_normal: vec3<f32>, material: ResolvedMaterial, workgroup_id: vec2<u32>, pixel_id: vec2<u32>, rng: ptr<function, u32>) -> InitialSamplingResult {
+    let n = max(constants.paths_per_pixel, 1u);
+    if n == 1u { return generate_initial_path(world_position, world_normal, material, workgroup_id, pixel_id, rng); }
+    var out: InitialSamplingResult;
+    out.radiance = vec3(0.0);
+    @if(RESTIR) {
+        out.reservoir = empty_reservoir();
+        out.reservoir.confidence_weight = 1.0;
+        out.chosen_target = 0.0;
+    }
+    var weight_sum = 0.0;
+    for (var i = 0u; i < n; i++) {
+        let path = generate_initial_path(world_position, world_normal, material, workgroup_id, pixel_id, rng);
+        out.radiance += path.radiance;
+        @if(RESTIR) {
+            let w = path.reservoir.unbiased_contribution_weight * path.chosen_target;
+            if w > 0.0 {
+                weight_sum += w;
+                if rand_f(rng) < w / weight_sum {
+                    out.reservoir = path.reservoir;
+                    out.chosen_target = path.chosen_target;
+                }
+            }
+        }
+    }
+    out.radiance /= f32(n);
+    @if(RESTIR) {
+        out.reservoir.confidence_weight = 1.0;
+        out.reservoir.unbiased_contribution_weight = select(0.0, (weight_sum / f32(n)) / out.chosen_target, out.chosen_target > 0.0);
+    }
+    return out;
 }
 
 /// Path vertices use the following convention: x0 = camera, x1 = primary ray hit (the G-buffer
@@ -227,8 +265,10 @@ fn generate_initial_path(world_position: vec3<f32>, world_normal: vec3<f32>, mat
     var result: InitialSamplingResult;
     result.radiance = path.radiance;
     @if(RESTIR) {
+        result.chosen_target = 0.0;
         if path.selected_target_function > 0.0 {
             path.reservoir.unbiased_contribution_weight = path.weight_sum / path.selected_target_function;
+            result.chosen_target = path.selected_target_function;
         }
         result.reservoir = path.reservoir;
     }
@@ -367,8 +407,7 @@ fn generate_emissive_candidate(
     rng: ptr<function, u32>,
 ) {
     let NdotV_hit = max(dot(ray_hit.world_normal, -wi), 0.0001);
-    let light_count = arrayLength(&light_sources);
-    let area_pdf = 1.0 / (f32(light_count) * f32(ray_hit.triangle_count) * ray_hit.triangle_area);
+    let area_pdf = emissive_light_pmf() / (f32(ray_hit.triangle_count) * ray_hit.triangle_area);
     let p_light = area_pdf * ray_t * ray_t / NdotV_hit;
     let emissive_mis_weight = power_heuristic(p_brdf, p_light * p_nee * f32(di_samples));
 

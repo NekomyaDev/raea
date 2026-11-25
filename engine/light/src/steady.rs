@@ -163,8 +163,8 @@ pub fn line(r: &Value) -> String {
     )
 }
 
-/// What a light that doesn't hold still is told.
-pub const WHY: &str = "Patches this size are light built over frames that hasn't settled: on Solari the world cache, ReSTIR's reuse or the denoiser. Hold the frame with each switched off in turn (cache.steady or a baked cache, RAEA_SOLARI_DENOISE=0, RAEA_SOLARI_PSR=0) to see which; DIR/render.log holds what each render said";
+/// What a light that boils is told (boiling: the trade's word for low-frequency patches that crawl on a held frame).
+pub const WHY: &str = "Boiling: patches this size are light built over frames that hasn't settled. On Solari, paths (SolariLighting paths={4}) first, then the world cache, ReSTIR's reuse or the denoiser. Hold the frame with each switched off in turn (cache.steady or a baked cache, RAEA_SOLARI_DENOISE=0, RAEA_SOLARI_PSR=0) to see which; DIR/render.log holds what each render said";
 
 pub fn steady(args: &[String]) -> R<String> {
     let first = args.first().ok_or(format!("usage: {USAGE}"))?;
@@ -201,9 +201,9 @@ pub fn steady(args: &[String]) -> R<String> {
         }
         std::fs::write(dir.join("steady.json"), serde_json::to_string_pretty(&r).unwrap_or_default()).map_err(|e| e.to_string())?;
         let said = format!("energy {} stops after {m} frames against the frame cold (max {MAX_ENERGY}), {}", r["energy"], line(&r));
-        return if r["steady"] == json!(true) { Ok(format!("STEADY  {said}")) } else { Err(format!("the light doesn't hold still: {said}. {WHY}")) };
+        return if r["steady"] == json!(true) { Ok(format!("STEADY  {said}")) } else { Err(format!("the light boils: {said}. {WHY}")) };
     }
-    if r["steady"] == json!(true) { Ok(format!("STEADY  {}", line(&r))) } else { Err(format!("the light doesn't hold still: {}. {WHY}", line(&r))) }
+    if r["steady"] == json!(true) { Ok(format!("STEADY  {}", line(&r))) } else { Err(format!("the light boils: {}. {WHY}", line(&r))) }
 }
 
 #[cfg(test)]

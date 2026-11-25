@@ -1,5 +1,5 @@
 import bevy_pbr::render::pbr_lighting::D_GGX;
-import bevy_pbr::render::utils::{rand_vec2f, rand_u, rand_range_u};
+import bevy_pbr::render::utils::{rand_f, rand_vec2f, rand_u, rand_range_u};
 import bevy_render::maths::{PI_2, orthonormalize};
 import package::scene::bindings::{trace_ray, trace_ray_previous_frame, RAY_T_MIN, RAY_T_MAX, light_sources, directional_lights, environment_map, environment_map_sampler, environment_map_light, LightSource, LIGHT_SOURCE_KIND_DIRECTIONAL, LIGHT_SOURCE_KIND_SKY_PORTAL, sky_portal, resolve_triangle_data_full, ResolvedRayHitFull, MIRROR_ROUGHNESS_THRESHOLD, offset_ray_origin};
 
@@ -128,9 +128,45 @@ fn sample_random_light(ray_origin: vec3<f32>, origin_world_normal: vec3<f32>, rn
     return light_contribution;
 }
 
+// raea (11-25): light selection. Upstream picks a source uniformly by count, so in MALL RAT's court (93 emissive meshes,
+// the sun and its sky portals) the sun, which lights most of it, got one sample in about 95, and a LOD swap that changed
+// the count moved its share from one frame to the next. Now the sky's sources (directional lights and sky portals) share
+// a fixed part of the samples, environment_map_light.sky_share, and the emissive meshes the rest; within each group
+// every source alike. A share of 0 (or a scene with only one group) is upstream's: every source alike
+fn sky_sources() -> u32 { return environment_map_light.sky_count; }
+fn light_share_on() -> bool {
+    let n = arrayLength(&light_sources);
+    return environment_map_light.sky_share > 0.0 && sky_sources() > 0u && sky_sources() < n;
+}
+// the chance light selection picks one given sky source (a directional light or a sky portal)
+fn sky_light_pmf() -> f32 {
+    if !light_share_on() { return 1.0 / f32(arrayLength(&light_sources)); }
+    return environment_map_light.sky_share / f32(sky_sources());
+}
+// the chance light selection picks one given emissive mesh
+fn emissive_light_pmf() -> f32 {
+    if !light_share_on() { return 1.0 / f32(arrayLength(&light_sources)); }
+    return (1.0 - environment_map_light.sky_share) / f32(arrayLength(&light_sources) - sky_sources());
+}
+// the chance light selection picks source `light_index`
+fn light_pmf(light_index: u32) -> f32 {
+    if (light_sources[light_index].kind & 1u) == 1u { return sky_light_pmf(); }
+    return emissive_light_pmf();
+}
+fn sky_light_id(i: u32) -> u32 { return environment_map_light.sky_ids[i >> 2u][i & 3u]; }
+fn pick_light(rng: ptr<function, u32>) -> u32 {
+    let n = arrayLength(&light_sources);
+    if !light_share_on() { return rand_range_u(n, rng); }
+    let s = sky_sources();
+    if rand_f(rng) < environment_map_light.sky_share { return sky_light_id(rand_range_u(s, rng)); }
+    // the r-th emissive source: r counted past each sky source at or below it (the sky's indices ascend)
+    var r = rand_range_u(n - s, rng);
+    for (var i = 0u; i < s; i++) { if sky_light_id(i) <= r { r += 1u; } }
+    return r;
+}
+
 fn random_emissive_light_pdf(hit: ResolvedRayHitFull, ray_distance: f32, NdotV: f32) -> f32 {
-    let light_count = arrayLength(&light_sources);
-    let area_pdf = 1.0 / (f32(light_count) * f32(hit.triangle_count) * hit.triangle_area);
+    let area_pdf = emissive_light_pmf() / (f32(hit.triangle_count) * hit.triangle_area);
     return area_pdf * (ray_distance * ray_distance) / NdotV;
 }
 
@@ -156,8 +192,7 @@ fn sample_environment_map_light_and_sun(world_direction: vec3<f32>, sun: bool) -
 }
 
 fn generate_random_light_sample(rng: ptr<function, u32>) -> GenerateRandomLightSampleResult {
-    let light_count = arrayLength(&light_sources);
-    let light_id = rand_range_u(light_count, rng);
+    let light_id = pick_light(rng);
 
     let light_source = light_sources[light_id];
 
@@ -172,7 +207,7 @@ fn generate_random_light_sample(rng: ptr<function, u32>) -> GenerateRandomLightS
     let light_sample = LightSample((light_id << 16u) | triangle_id, seed);
 
     var resolved_light_sample = resolve_light_sample(light_sample, light_source);
-    resolved_light_sample.inverse_pdf *= f32(light_count);
+    resolved_light_sample.inverse_pdf /= light_pmf(light_id);
 
     return GenerateRandomLightSampleResult(light_sample, resolved_light_sample);
 }
@@ -274,7 +309,7 @@ fn sky_portal_light_pdf(origin: vec3<f32>, wi: vec3<f32>) -> f32 {
         let a = (dot(h, portal.u) * vv - dot(h, portal.v) * uv) / det;
         let b = (dot(h, portal.v) * uu - dot(h, portal.u) * uv) / det;
         if a < 0.0 || a > 1.0 || b < 0.0 || b > 1.0 { continue; }
-        return t * t / (f32(arrayLength(&light_sources)) * portal.area * abs(cos_portal));
+        return t * t * sky_light_pmf() / (portal.area * abs(cos_portal));
     }
     return 0.0;
 }

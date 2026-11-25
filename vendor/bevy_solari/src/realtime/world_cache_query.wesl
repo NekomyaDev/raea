@@ -30,12 +30,18 @@ fn query_world_cache_found(world_position_in: vec3<f32>, world_normal: vec3<f32>
     var cell_size = get_cell_size(world_position, view_position, ray_t, rng);
 
 @if(!NO_JITTER_WORLD_CACHE) {
+    // raea (11-25): while the camera holds still with a steady cache (world_cache_still), no jitter and one LOD band
+    // (get_cell_size), so a surface has one key a cell and each cell converges. With them, a held frame kept making
+    // keys (a jittered point, a band picked by chance), and the young cells' few samples kept MALL RAT's held court
+    // patchy where a frozen cache wasn't (raea light steady). A moving camera keeps both, which hide the cells' edges
+    if !world_cache_still() {
     // Jitter query point, which essentially blurs the cache a bit so it's not so grid-like
     // https://tomclabault.github.io/blog/2025/regir, jitter_world_position_tangent_plane
     let TBN = orthonormalize(world_normal);
     let offset = (rand_vec2f(rng) * 2.0 - 1.0) * cell_size * 0.5;
     world_position += offset.x * TBN[0] + offset.y * TBN[1];
     cell_size = get_cell_size(world_position, view_position, ray_t, rng);
+    }
 }
 
     let world_position_quantized = bitcast<vec3<u32>>(quantize_position(world_position, cell_size));
@@ -87,9 +93,14 @@ fn get_cell_size(world_position: vec3<f32>, view_position: vec3<f32>, ray_t: f32
     let camera_distance = distance(view_position, world_position) / constants.world_cache_position_lod_scale;
     let lod_f = log2(1.0 + camera_distance);
     let lod_fract = fract(lod_f);
-    let lod = floor(lod_f) + select(0.0, 1.0, rand_f(rng) < lod_fract * lod_fract * lod_fract);
+    let coin = rand_f(rng);
+    // raea: one band while the camera holds (world_cache_still); the random pick between two bands otherwise
+    let lod = floor(lod_f) + select(select(0.0, 1.0, coin < lod_fract * lod_fract * lod_fract), select(0.0, 1.0, lod_fract > 0.5), world_cache_still());
     return constants.world_cache_position_base_cell_size * exp2(lod);
 }
+
+// raea (11-25): bit 1 of constants.world_cache_steady (prepare.rs): a steady cache with the camera where it was last frame
+fn world_cache_still() -> bool { return (constants.world_cache_steady & 2u) != 0u; }
 
 fn quantize_position(world_position: vec3<f32>, quantization_factor: f32) -> vec3<f32> {
     return floor(world_position / quantization_factor + 0.0001);

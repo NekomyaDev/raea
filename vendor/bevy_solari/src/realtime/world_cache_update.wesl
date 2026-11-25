@@ -14,13 +14,22 @@ import package::realtime::bindings::{
 
 enable wgpu_ray_query;
 
+// raea: a cell's random numbers this frame. A bake (world_cache_steady) runs the update several times a frame
+// (SolariLighting::world_cache_update_iterations), so each run takes the cell's sample count too, which its blend raises
+// by one: the same numbers each run would add the same sample again. sample_di, sample_gi and blend_new_samples read the
+// count before blend_new_samples writes it, so the three agree on whether the cell updates
+fn cell_seed(cell_index: u32) -> u32 {
+    let n = select(0u, u32(world_cache.radiance[cell_index].a) * 2654435761u, ((constants.world_cache_steady & 1u) != 0u));
+    return cell_index + constants.frame_rng + n;
+}
+
 @compute @workgroup_size(64, 1, 1)
 fn sample_di(@builtin(workgroup_id) workgroup_id: vec3<u32>, @builtin(global_invocation_id) active_cell_id: vec3<u32>) {
     if active_cell_id.x >= world_cache.active_cells_count { return; }
 
     let cell_index = world_cache.active_cell_indices[active_cell_id.x];
     let geometry_data = world_cache.geometry_data[cell_index];
-    var rng = cell_index + constants.frame_rng;
+    var rng = cell_seed(cell_index);
 
     if rand_f(&rng) >= f32(constants.world_cache_cell_updates_soft_target) / f32(world_cache.active_cells_count) { return; }
 
@@ -37,7 +46,7 @@ fn sample_gi(@builtin(workgroup_id) workgroup_id: vec3<u32>, @builtin(global_inv
 
     let cell_index = world_cache.active_cell_indices[active_cell_id.x];
     let geometry_data = world_cache.geometry_data[cell_index];
-    var rng = cell_index + constants.frame_rng;
+    var rng = cell_seed(cell_index);
 
     if rand_f(&rng) >= f32(constants.world_cache_cell_updates_soft_target) / f32(world_cache.active_cells_count) { return; }
 
@@ -87,7 +96,7 @@ fn blend_new_samples(@builtin(global_invocation_id) active_cell_id: vec3<u32>) {
     if active_cell_id.x >= world_cache.active_cells_count { return; }
 
     let cell_index = world_cache.active_cell_indices[active_cell_id.x];
-    var rng = cell_index + constants.frame_rng;
+    var rng = cell_seed(cell_index);
 
     if rand_f(&rng) >= f32(constants.world_cache_cell_updates_soft_target) / f32(world_cache.active_cells_count) { return; }
 
@@ -100,7 +109,9 @@ fn blend_new_samples(@builtin(global_invocation_id) active_cell_id: vec3<u32>) {
     let sample_count = min(old_radiance.a + 1.0, constants.world_cache_max_temporal_samples);
     let alpha = abs(luminance_delta) / max(luminance(old_radiance.rgb), 0.001);
     let max_sample_count = mix(constants.world_cache_max_temporal_samples, 1.0, pow(saturate(alpha), 1.0 / 8.0));
-    var blend_amount = 1.0 / min(sample_count, max_sample_count);
+    // raea: a bake (world_cache_steady) keeps the whole history: a cell's own noise moves its luminance, which the
+    // line above reads as the light changing, and at one ray a frame it cut a 32-frame history to about 10
+    var blend_amount = 1.0 / select(min(sample_count, max_sample_count), sample_count, ((constants.world_cache_steady & 1u) != 0u));
     if bool(constants.reset) {
         blend_amount = 1.0;
     }

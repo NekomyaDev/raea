@@ -69,6 +69,7 @@ type SolariLightingViewQuery = (
     &'static ViewUniformOffset,
     &'static PreviousViewUniformOffset,
     Option<&'static super::guides::SolariGuideTextures>,
+    &'static super::SolariLighting,
 );
 
 #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
@@ -80,6 +81,7 @@ type SolariLightingViewQuery = (
     &'static PreviousViewUniformOffset,
     Option<&'static ViewDlssRayReconstructionTextures>,
     Option<&'static super::guides::SolariGuideTextures>,
+    &'static super::SolariLighting,
 );
 
 pub fn solari_lighting(
@@ -101,6 +103,7 @@ pub fn solari_lighting(
         view_uniform_offset,
         previous_view_uniform_offset,
         view_guides,
+        settings,
     ) = view.into_inner();
 
     #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
@@ -112,6 +115,7 @@ pub fn solari_lighting(
         previous_view_uniform_offset,
         view_dlss_rr_textures,
         view_guides,
+        settings,
     ) = view.into_inner();
 
     // raea: DLSS-RR's guides, else guides.rs's, both written by the same passes
@@ -125,6 +129,9 @@ pub fn solari_lighting(
     let guides = guides.or(view_guides.map(|d| {
         [&d.diffuse_albedo, &d.specular_albedo, &d.normal_roughness, &d.depth, &d.specular_motion_vectors]
     }));
+
+    // raea: a bake's earlier writes, submitted since, finished to their files
+    super::bake::finish(render_device.wgpu_device());
 
     let Some(pipelines) = solari_pipelines else {
         return;
@@ -335,13 +342,19 @@ pub fn solari_lighting(
     d.end(&mut pass);
     drop(pass);
 
+    // raea: a baked cache (SolariLighting::world_cache_load) is held: no decay, no compaction, no update, so neither
+    // time nor a reset changes it. A bake (world_cache_keep) skips the decay but on a reset, so every cell its camera
+    // path meets stays, and runs the update world_cache_update_iterations times
+    let frozen = !settings.world_cache_load.is_empty();
     let mut pass = stage!("solari_lighting/world_cache", 1);
     let d = diagnostics.time_span(&mut pass, "solari_lighting/world_cache");
-
+    if !frozen {
     pass.set_bind_group(2, &bind_group_world_cache_active_cells_dispatch, &[]);
 
-    pass.set_pipeline(decay_world_cache_pipeline);
-    pass.dispatch_workgroups((WORLD_CACHE_SIZE / 1024) as u32, 1, 1);
+    if !settings.world_cache_keep || settings.reset {
+        pass.set_pipeline(decay_world_cache_pipeline);
+        pass.dispatch_workgroups((WORLD_CACHE_SIZE / 1024) as u32, 1, 1);
+    }
 
     pass.set_pipeline(compact_world_cache_single_block_pipeline);
     pass.dispatch_workgroups((WORLD_CACHE_SIZE / 1024) as u32, 1, 1);
@@ -354,26 +367,35 @@ pub fn solari_lighting(
 
     pass.set_bind_group(2, None, &[]);
 
-    pass.set_pipeline(sample_di_for_world_cache_pipeline);
-    pass.dispatch_workgroups_indirect(
-        &solari_lighting_resources.world_cache_active_cells_dispatch,
-        0,
-    );
+    for _ in 0..settings.world_cache_update_iterations.max(1) {
+        pass.set_pipeline(sample_di_for_world_cache_pipeline);
+        pass.dispatch_workgroups_indirect(
+            &solari_lighting_resources.world_cache_active_cells_dispatch,
+            0,
+        );
 
-    pass.set_pipeline(sample_gi_for_world_cache_pipeline);
-    pass.dispatch_workgroups_indirect(
-        &solari_lighting_resources.world_cache_active_cells_dispatch,
-        0,
-    );
+        pass.set_pipeline(sample_gi_for_world_cache_pipeline);
+        pass.dispatch_workgroups_indirect(
+            &solari_lighting_resources.world_cache_active_cells_dispatch,
+            0,
+        );
 
-    pass.set_pipeline(blend_new_world_cache_samples_pipeline);
-    pass.dispatch_workgroups_indirect(
-        &solari_lighting_resources.world_cache_active_cells_dispatch,
-        0,
-    );
+        pass.set_pipeline(blend_new_world_cache_samples_pipeline);
+        pass.dispatch_workgroups_indirect(
+            &solari_lighting_resources.world_cache_active_cells_dispatch,
+            0,
+        );
+    }
+    }
 
     d.end(&mut pass);
     drop(pass);
+
+    // raea: a bake's write (SolariLighting::world_cache_save): the cache copied out at the end of this frame's update
+    // and written to the file by a later frame, once this one has been submitted (bake::finish)
+    if !settings.world_cache_save.is_empty() {
+        super::bake::save(render_device.wgpu_device(), command_encoder, &solari_lighting_resources.world_cache, &settings.world_cache_save);
+    }
 
     let mut pass = stage!("solari_lighting/initial", 2);
     let d = diagnostics.time_span(&mut pass, "solari_lighting/lighting");

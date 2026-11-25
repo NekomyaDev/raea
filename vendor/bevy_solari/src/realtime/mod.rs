@@ -1,3 +1,4 @@
+mod bake;
 mod extract;
 // raea: the denoiser guides (primary surface replacement) without DLSS
 mod guides;
@@ -167,6 +168,14 @@ pub struct SolariLighting {
     /// Defaults to `1.0` (every pixel, every frame).
     pub first_bounce_probability: f32,
 
+    /// raea (11-25): initial paths traced a pixel a frame, 1 to 16. One path a pixel on MALL RAT's sunlit court has a
+    /// standard deviation as large as its mean (raea light steady, denoiser and ReSTIR off: white noise), which ReSTIR's
+    /// reuse and the denoiser turn into patches that crawl. N paths cut that variance N times: their directly shaded
+    /// light averaged, their reservoirs resampled into one (RIS over the N). Costs N times the initial path's rays.
+    ///
+    /// Defaults to `1`.
+    pub paths_per_pixel: u32,
+
     /// How responsive the world cache is to changes in lighting.
     ///
     /// Higher values accumulate more temporal history, giving more stable but
@@ -230,6 +239,26 @@ pub struct SolariLighting {
     /// After setting this to true, it will automatically be toggled
     /// back to false at the end of the frame.
     pub reset: bool,
+
+    /// raea: the world cache baked (docs/solari-efficiency.md). A take's lights and sets hold still, so its cache can be
+    /// gathered once, converged, and read back while it renders: a live cell takes one bounce ray a frame and keeps a
+    /// short history, and each cell's own error is a blotch the denoiser spreads over floors, walls and reflections.
+    ///
+    /// Cells never age out while set: a bake keeps every cell its camera path meets. A reset still empties the cache.
+    pub world_cache_keep: bool,
+    /// raea: each cell keeps its whole history (up to `world_cache_max_temporal_samples`) instead of shortening it when
+    /// its light changes, which a cell's own noise reads as. For a bake, with a long history.
+    pub world_cache_steady: bool,
+    /// raea: the cache's update (each cell's bounce sample, blended) run this many times a frame, each with its own
+    /// random numbers while `world_cache_steady`. A bake converges in fewer frames. Defaults to 1.
+    pub world_cache_update_iterations: u32,
+    /// raea: write the whole cache to this file at the end of this frame (a bake, a few frames before its last). Empty:
+    /// no write.
+    pub world_cache_save: String,
+    /// raea: read the cache from this file (a bake's `world_cache_save`) and hold it: no decay, no updates, and a reset
+    /// doesn't empty it. Read again when the name changes (a take whose lights change at a cut: one bake each side).
+    /// A cell the bake never met stays empty and a path that finds it carries on tracing. Empty: the live cache.
+    pub world_cache_load: String,
 }
 
 impl Default for SolariLighting {
@@ -241,6 +270,7 @@ impl Default for SolariLighting {
             secondary_di_samples: 4,
             max_bounces: 3,
             first_bounce_probability: 1.0,
+            paths_per_pixel: 1,
             world_cache_max_temporal_samples: 32.0,
             world_cache_direct_light_sample_count: 32,
             world_cache_max_gi_ray_distance: 1000.0,
@@ -248,6 +278,11 @@ impl Default for SolariLighting {
             world_cache_position_base_cell_size: 0.15,
             world_cache_position_lod_scale: 15.0,
             reset: true, // No temporal history on the first frame
+            world_cache_keep: false,
+            world_cache_steady: false,
+            world_cache_update_iterations: 1,
+            world_cache_save: String::new(),
+            world_cache_load: String::new(),
         }
     }
 }
