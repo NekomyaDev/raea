@@ -16,7 +16,7 @@
 #                                      the box as RAEA_AGENT_KEY: its agents clone raea projects (raea-repo clone OWNER
 #                                      PROJECT DIR, deploy/git/repo.sh), push, and send renders' media by hash (CR22, CR23)
 #
-# RAEA_VERSION (0.1.6) and AGENTS ("kimi-code claude-acp") pick what goes on, and RAEA_CLOUD_REF takes sdk/cloud from
+# RAEA_VERSION (0.1.9) and AGENTS ("kimi-code claude-acp") pick what goes on, and RAEA_CLOUD_REF takes sdk/cloud from
 # raea's public repo at that commit instead of this working tree; the farm comes from
 # ~/.config/raea-cloud/farm.env (RAEA_CLOUD_GPU_URL, RAEA_CLOUD_GPU_TOKEN). The Sprite's URL stays private to the org.
 # Game kits need ~/.config/raea-cloud/games/raea-games-linux-x86_64.tgz (raea-decompose and unity-rs built for Linux,
@@ -27,7 +27,7 @@ set -euo pipefail
 . "$(dirname "$0")/org.sh"
 NAME=${2:-}
 [ -n "$NAME" ] || [ "${1:-}" = list ] || { echo "box: name the Sprite"; exit 2; }
-RAEA_VERSION=${RAEA_VERSION:-0.1.6}
+RAEA_VERSION=${RAEA_VERSION:-0.1.9}
 AGENTS=${AGENTS:-kimi-code claude-acp antigravity-acp}
 HERE=$(cd "$(dirname "$0")/../.." && pwd)
 FARM=${RAEA_FARM_ENV:-$HOME/.config/raea-cloud/farm.env}
