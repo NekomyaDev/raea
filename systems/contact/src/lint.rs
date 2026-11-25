@@ -320,7 +320,8 @@ fn moving(now: &[Item], other: &[Item]) -> Vec<bool> {
 /// `now` is the frame's parts, `next` the next frame's (or the one before, at the end) to see what moves.
 pub fn lint(now: &[Item], next: &[Item]) -> (Vec<Value>, usize) {
     let moving = moving(now, next);
-    let (parts, items, skipped) = parts_of(now, &moving);
+    let (parts, items, mut skipped) = parts_of(now, &moving);
+    let (parts, items) = unparked(parts, items, &mut skipped);
     let grid = Grid::new(&parts);
     let insets = insets(&parts);
     let mut out = Vec::new();
@@ -449,6 +450,34 @@ pub fn lint(now: &[Item], next: &[Item]) -> (Vec<Value>, usize) {
         }
     }
     (out, errors)
+}
+
+/// How far from the scene a part is parked: a piece swaps a flipbook's frames (MALL RAT's fountain, 88 water models) by
+/// moving the ones not shown hundreds of metres away, where they lie in one another and read as faces fighting.
+const PARKED: f32 = 500.0;
+
+/// The parts in the scene, without those parked far from it (further than PARKED from the median of every part's
+/// centre), each of those said once as not checked.
+fn unparked<T>(parts: Vec<Part>, items: Vec<T>, skipped: &mut Vec<String>) -> (Vec<Part>, Vec<T>) {
+    if parts.len() < 3 {
+        return (parts, items);
+    }
+    let mid = |k: usize| {
+        let mut v: Vec<f32> = parts.iter().map(|p| ((p.lo + p.hi) * 0.5)[k]).collect();
+        v.sort_by(f32::total_cmp);
+        v[v.len() / 2]
+    };
+    let centre = Vec3::new(mid(0), mid(1), mid(2));
+    let mut parked = 0;
+    let kept: (Vec<Part>, Vec<T>) = parts.into_iter().zip(items).filter(|(p, _)| {
+        let far = ((p.lo + p.hi) * 0.5).distance(centre) > PARKED;
+        parked += far as usize;
+        !far
+    }).unzip();
+    if parked > 0 {
+        skipped.push(format!("{parked} part{} parked over {PARKED} m from the scene (a flipbook's frames not shown)", if parked == 1 { "" } else { "s" }));
+    }
+    kept
 }
 
 /// The surface a part would land on and how far it is (negative: sunk): what it rests on, or the nearest surface

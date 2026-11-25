@@ -15,17 +15,57 @@ enable wgpu_ray_query;
 
 const SPATIAL_REUSE_RADIUS_PIXELS = 30.0;
 
+// raea (11-25): the firefly filter, after RTXDI's boiling filter (RTXDI_BoilingFilter; ReSTIR PT Enhanced names the
+// cause: a high-energy sample weighted up by temporal reuse spreads through spatial reuse and stays). Each pixel of
+// an 8x8 block puts its merged reservoir's contribution (the target function times its weight) here; one that is over
+// constants.firefly_cap times the block's mean has its weight cut to that before it is kept, so it can't be reused at
+// full strength next frame. RTXDI drops such a reservoir; cutting it keeps the light it would have given on average.
+// On MALL RAT's held frames a square jumped 30% in a frame and took 30 to fall back (raea light steady, boiling 10%).
+var<workgroup> block_contribution: array<f32, 64>;
+
+struct TemporalPixel {
+    reservoir: Reservoir,
+    contribution: f32,
+    pixel_index: u32,
+    keep: bool,
+}
+
 @compute @workgroup_size(8, 8, 1)
-fn initial_and_temporal(@builtin(workgroup_id) workgroup_id: vec3<u32>, @builtin(global_invocation_id) global_id: vec3<u32>) {
-    if any(global_id.xy >= vec2u(view.main_pass_viewport.zw)) { return; }
+fn initial_and_temporal(@builtin(workgroup_id) workgroup_id: vec3<u32>, @builtin(global_invocation_id) global_id: vec3<u32>, @builtin(local_invocation_index) local_index: u32) {
+    var pixel = initial_and_temporal_pixel(workgroup_id, global_id);
+    var own = pixel.contribution;
+    if !(own > 0.0) || isinf(own) { own = 0.0; }
+    block_contribution[local_index] = own;
+    workgroupBarrier();
+    if !pixel.keep { return; }
+    if constants.firefly_cap > 0.0 && own > 0.0 {
+        var sum = 0.0;
+        var lit = 0.0;
+        for (var i = 0u; i < 64u; i++) {
+            let c = block_contribution[i];
+            sum += c;
+            lit += f32(c > 0.0);
+        }
+        let most = sum / max(lit, 1.0) * constants.firefly_cap;
+        if own > most {
+            // the weight is cut, so the frame is darker by what the outliers carried (a room lit by small bulbs: 0.15
+            // stops at 12, 0.29 at 6). Cutting the confidence instead (ReSTIR PT Enhanced's adaptive cap) lost as
+            // much there and held less still (0.89 against 0.73 at 6)
+            pixel.reservoir.unbiased_contribution_weight *= most / own;
+        }
+    }
+    reservoirs_b[pixel.pixel_index] = pixel.reservoir;
+}
+
+fn initial_and_temporal_pixel(workgroup_id: vec3<u32>, global_id: vec3<u32>) -> TemporalPixel {
+    if any(global_id.xy >= vec2u(view.main_pass_viewport.zw)) { return TemporalPixel(empty_reservoir(), 0.0, 0u, false); }
 
     let pixel_index = global_id.x + global_id.y * u32(view.main_pass_viewport.z);
     var rng = pixel_index + constants.frame_rng;
 
     let depth = textureLoad(depth_buffer, global_id.xy, 0);
     if depth == 0.0 {
-        reservoirs_b[pixel_index] = empty_reservoir();
-        return;
+        return TemporalPixel(empty_reservoir(), 0.0, pixel_index, true);
     }
     let surface = gpixel_resolve(textureLoad(gbuffer, global_id.xy, 0), depth, global_id.xy, view.main_pass_viewport.zw, view.world_from_clip);
 
@@ -38,7 +78,8 @@ fn initial_and_temporal(@builtin(workgroup_id) workgroup_id: vec3<u32>, @builtin
     let merge_result = merge_reservoirs(initial.reservoir, surface.world_position, surface.world_normal, surface.material,
         temporal.reservoir, temporal.world_position, temporal.world_normal, temporal.material, previous_camera_world_position, &rng);
 
-    reservoirs_b[pixel_index] = merge_result.merged_reservoir;
+    let contribution = luminance(merge_result.selected_sample_brdf_radiance) * merge_result.merged_reservoir.unbiased_contribution_weight;
+    return TemporalPixel(merge_result.merged_reservoir, contribution, pixel_index, true);
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -140,7 +181,13 @@ fn load_spatial_reservoir(pixel_id: vec2<u32>, depth: f32, world_position: vec3<
 
 fn get_neighbor_pixel_id(center_pixel_id: vec2<u32>, search_radius: f32, rng: ptr<function, u32>) -> vec2<u32> {
     var spatial_id = vec2<f32>(center_pixel_id) + sample_disk(search_radius, rng);
-    spatial_id = clamp(spatial_id, vec2(0.0), view.main_pass_viewport.zw - 1.0);
+    // raea (11-25): a neighbour off the frame reflected back in, not clamped to its border: clamped, about half a border
+    // pixel's neighbours were the same border column, so the pixels along it reused the same few reservoirs and their
+    // light wandered together (MALL RAT t2's worst boiling square, 6.8%, was on the frame's edge in every hold)
+    let hi = view.main_pass_viewport.zw - 1.0;
+    spatial_id = abs(spatial_id);
+    spatial_id = hi - abs(hi - spatial_id);
+    spatial_id = clamp(spatial_id, vec2(0.0), hi);
     return vec2<u32>(spatial_id);
 }
 

@@ -85,6 +85,9 @@ struct SolariLightingUniforms {
     spatial_reuse_radius: f32,
     // raea (11-25): SolariLighting::paths_per_pixel (RAEA_SOLARI_PATHS overrides it)
     paths_per_pixel: u32,
+    // raea (11-25): the firefly filter (restir.wesl): a reservoir whose contribution is over this many times its 8x8
+    // block's mean is cut back to that, 0 off (RAEA_SOLARI_FIREFLY)
+    firefly_cap: f32,
 }
 
 impl SolariLightingUniforms {
@@ -104,8 +107,10 @@ impl SolariLightingUniforms {
             reset: (settings.reset || force_reset) as u32,
             first_bounce_probability: settings.first_bounce_probability.clamp(0.05, 1.0),
             // bit 1: a steady cache with the camera held (world_cache_query.wesl world_cache_still)
-            world_cache_steady: (settings.world_cache_steady || steady_override()) as u32 | ((((settings.world_cache_steady || steady_override()) && still) as u32) << 1),
+            // bits 16-31: a cell's life in frames unqueried (world_cache_query.wesl cell_life), 0 for Solari's
+            world_cache_steady: (settings.world_cache_steady || steady_override()) as u32 | ((((settings.world_cache_steady || steady_override()) && still) as u32) << 1) | (life_override().unwrap_or(settings.world_cache_cell_lifetime).min(65535) << 16),
             spatial_reuse_radius: spatial_reuse_radius(),
+            firefly_cap: firefly_override().unwrap_or(settings.firefly_cap).max(0.0),
             paths_per_pixel: paths_override().unwrap_or(settings.paths_per_pixel).clamp(1, 16),
         }
     }
@@ -412,6 +417,12 @@ fn spatial_reuse_radius() -> f32 {
     *R.get_or_init(|| std::env::var("RAEA_SOLARI_SPATIAL_RADIUS").ok().and_then(|v| v.parse::<f32>().ok()).filter(|v| *v >= 1.0).unwrap_or(30.0))
 }
 
+/// raea: RAEA_SOLARI_FIREFLY, the firefly filter's multiplier for every camera whatever the composition asks (0 off)
+fn firefly_override() -> Option<f32> {
+    static F: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *F.get_or_init(|| std::env::var("RAEA_SOLARI_FIREFLY").ok().and_then(|v| v.parse::<f32>().ok()).filter(|v| *v >= 0.0))
+}
+
 /// raea: RAEA_SOLARI_PATHS, paths a pixel for every camera whatever the composition asks (a sweep)
 fn paths_override() -> Option<u32> {
     static P: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
@@ -423,4 +434,10 @@ fn paths_override() -> Option<u32> {
 fn steady_override() -> bool {
     static S: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *S.get_or_init(|| std::env::var("RAEA_SOLARI_STEADY").as_deref() == Ok("1"))
+}
+
+/// raea: RAEA_SOLARI_CELL_LIFE, a world cache cell's life in frames for every camera whatever the composition asks
+fn life_override() -> Option<u32> {
+    static L: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *L.get_or_init(|| std::env::var("RAEA_SOLARI_CELL_LIFE").ok().and_then(|v| v.parse::<u32>().ok()))
 }

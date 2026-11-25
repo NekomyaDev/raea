@@ -175,6 +175,15 @@ pub struct SolariLighting {
     ///
     /// Defaults to `1`.
     pub paths_per_pixel: u32,
+    /// raea (11-25): the firefly filter (RTXDI's boiling filter). After temporal reuse, a reservoir whose contribution
+    /// is over this many times the mean of its 8x8 block has its weight cut to that. One very bright sample (a bounce
+    /// landing beside a small lamp) is otherwise reused for many frames and spread to its neighbours: a patch jumps
+    /// 30% in a frame and takes 30 frames to fall back. It costs the light those samples carried, so it's a trade:
+    /// MALL RAT's party room, lit by bulbs, held still at 6 (boiling 1.63% to 0.73%) and read 0.29 stops darker; at 32
+    /// nothing is lost and little is gained. RTXDI's usual strengths are 31 to 41.
+    ///
+    /// Defaults to `0.0` (off).
+    pub firefly_cap: f32,
 
     /// How responsive the world cache is to changes in lighting.
     ///
@@ -252,6 +261,11 @@ pub struct SolariLighting {
     /// raea: the cache's update (each cell's bounce sample, blended) run this many times a frame, each with its own
     /// random numbers while `world_cache_steady`. A bake converges in fewer frames. Defaults to 1.
     pub world_cache_update_iterations: u32,
+    /// raea (11-25): how many frames a world cache cell lives without being queried, up to 65535; 0 is Solari's 10. A
+    /// moving camera that leaves a place and comes back finds its cells dead after 10 frames and its light starting
+    /// cold again: MALL RAT's court kept settling as the camera crossed it (raea light steady). Longer lives keep more
+    /// cells, which the cache's 2^20 slots must hold.
+    pub world_cache_cell_lifetime: u32,
     /// raea: write the whole cache to this file at the end of this frame (a bake, a few frames before its last). Empty:
     /// no write.
     pub world_cache_save: String,
@@ -271,6 +285,7 @@ impl Default for SolariLighting {
             max_bounces: 3,
             first_bounce_probability: 1.0,
             paths_per_pixel: 1,
+            firefly_cap: 0.0,
             world_cache_max_temporal_samples: 32.0,
             world_cache_direct_light_sample_count: 32,
             world_cache_max_gi_ray_distance: 1000.0,
@@ -281,6 +296,7 @@ impl Default for SolariLighting {
             world_cache_keep: false,
             world_cache_steady: false,
             world_cache_update_iterations: 1,
+            world_cache_cell_lifetime: 0,
             world_cache_save: String::new(),
             world_cache_load: String::new(),
         }

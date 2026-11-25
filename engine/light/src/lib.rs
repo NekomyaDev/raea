@@ -13,6 +13,7 @@
 //! live stage, 1920x1080 by default) }.
 
 pub mod metric;
+mod kinds;
 pub mod steady;
 
 use raea_runtime_bundle::{flag, R};

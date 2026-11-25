@@ -18,6 +18,16 @@ const HISTORY_CAP: f32 = 16.0;
 // a still pixel's history held within what's about it now, its darkest and brightest times these
 const STILL_LOW: f32 = 0.95;
 const STILL_HIGH: f32 = 1.05;
+// how far a still pixel's history goes toward those bounds a frame where it's thin (THIN). At 1, the default, it's held
+// to them at once, and an emitter under a pixel tall, which some of the jitter's positions miss altogether, is cut to
+// black on those frames and built again on the others: MALL RAT's ceiling tubes seen edge-on changed shape every frame
+// (raea light steady: jitter 7% and 8% in their squares, 0.01% with the history always taken). At a quarter
+// (<SolariLighting constants={{ emissiveClamp: { stillHold: 0.25 } }} />) they read 2.1% and 3.6%, and a 30000-nit
+// orb switched off leaves its rim behind: +0.30 stops on its tile against +0.17, +0.26 eight frames on (lightbench
+// window-still-off-q against -one). So it's a scene's choice until a pixel can count the frames it was missed
+const STILL_HOLD: f32 = 1.0;
+// a history counts as thin where the brighter of its two sides, two pixels off, is under this much of it
+const THIN: f32 = 0.25;
 // a moving pixel's history held under this many times the brightest about it, plus this
 const MOVING_GAIN: f32 = 4.0;
 const MOVING_FLOOR: f32 = 0.02;
@@ -190,7 +200,23 @@ fn restore_taa(@builtin(global_invocation_id) id: vec3<u32>) {
             // them (a lamp switched off goes dark at once, rim and all, not over a second)
             let reach = select(1.5, 1.05, still);
             if (hd.b * reach >= zlo && hd.a <= zhi * reach && params[0].w != 3.0) {
-                hrgb = clamped;
+                // eased only where the history is a thin line or a point: an emitter under a pixel wide is all the jitter can miss outright. A lamp's or an orb's
+                // face and rim have light to one side, and go dark at once (RT32: eased everywhere, a 30000-nit orb
+                // switched off left +2.5 stops on its tile for 8 frames and +0.8 at 16; eased on thin histories, +0.30
+                // against +0.17 clamped at once, the orb's rim where it's dark to both sides)
+                var hold = 1.0;
+                if (still) {
+                    let px = 2.0 / out_size;
+                    let lw = vec3<f32>(0.2126, 0.7152, 0.0722);
+                    let l0 = dot(hrgb, lw) * THIN;
+                    let lx = max(dot(textureSampleLevel(hist_in, hist_sampler, was + vec2<f32>(px.x, 0.0), 0.0).rgb, lw), dot(textureSampleLevel(hist_in, hist_sampler, was - vec2<f32>(px.x, 0.0), 0.0).rgb, lw));
+                    let ly = max(dot(textureSampleLevel(hist_in, hist_sampler, was + vec2<f32>(0.0, px.y), 0.0).rgb, lw), dot(textureSampleLevel(hist_in, hist_sampler, was - vec2<f32>(0.0, px.y), 0.0).rgb, lw));
+                    // stricter tests of "thin" kept the orb's rim out (+0.18 by the second frame) and lost the tubes:
+                    // a line alike along itself, 5.2 and 5.8%; a ring of eight with each lit place lit across, 6.2 and
+                    // 6.5% (the tubes hang in rows, so a tube's neighbours light one side of it)
+                    if (min(lx, ly) < l0) { hold = STILL_HOLD; }
+                }
+                hrgb = mix(hrgb, clamped, hold);
                 dbg_f += 8.0;
             }
         }
@@ -232,5 +258,5 @@ fn restore_taa(@builtin(global_invocation_id) id: vec3<u32>) {
         textureStore(color, p, vec4<f32>(weight, hist.a / HISTORY_CAP, f32(hist.a > 0.0), c.a));
         return;
     }
-    textureStore(color, p, vec4<f32>(c.rgb + e, c.a));
+    textureStore(color, p, vec4<f32>(uncompress(c.rgb) + e, c.a));
 }

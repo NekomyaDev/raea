@@ -63,7 +63,15 @@ fn permute_pixel(pixel_id: vec2<u32>, frame_index: u32, view_size: vec2<f32>) ->
     shifted_pixel_id ^= vec2<i32>(3);
     shifted_pixel_id -= offset;
     if any(shifted_pixel_id < vec2<i32>(0)) || any(shifted_pixel_id >= vec2<i32>(view_size)) {
-        return pixel_id;
+        // raea (11-25): a pixel whose shifted 4x4 block runs off the frame was left unpermuted, so the frame's 3 px
+        // border reused its own history every frame and boiled more than the rest (MALL RAT's holds: border squares
+        // 27% more on average, twice on t7, t8). It takes the block's swap unshifted instead, which stays in the frame
+        // when the frame's a multiple of 4, and is left as it was only when that's off it too.
+        let unshifted = vec2<i32>(pixel_id) ^ vec2<i32>(3);
+        if any(unshifted >= vec2<i32>(view_size)) {
+            return pixel_id;
+        }
+        return vec2<u32>(unshifted);
     }
     return vec2<u32>(shifted_pixel_id);
 }

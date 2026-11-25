@@ -240,6 +240,16 @@ fn check_one(tsx: &Path, id: Option<String>, rules: &[Rule], args: &[String], wh
             None => hows.iter().filter(|(_, h)| matches!(h, How::Named(n) if n.render && n.name != "text-read")).for_each(|(r, _)| needs(&mut waits, r)),
         }
     }
+    // traced light held still (raea light steady): with the floor, a composition lit by Solari carries what its newest
+    // hold of each frame found, kept in the project's record; with none yet, it waits for one
+    if floor && traced(tsx) {
+        let held = light_held(tsx, id.as_deref());
+        if held.is_empty() {
+            let c = id.as_ref().map(|i| format!(" --composition {i}")).unwrap_or_default();
+            waits.push(("light-steady".into(), format!("a held frame of its traced light (raea light steady {}{c} --frame N -o DIR)", tsx.display())));
+        }
+        found.extend(held.into_iter().filter(|f| f.level != Level::Note));
+    }
     // the project's own checks, in one run
     let mut files: Vec<PathBuf> = Vec::new();
     let mut plan = Vec::new();
@@ -267,6 +277,31 @@ fn check_one(tsx: &Path, id: Option<String>, rules: &[Rule], args: &[String], wh
     shots.dedup();
     let fps = worlds.first().map_or(30.0, |w| w.fps);
     Ok(Checked { file: tsx.to_path_buf(), id, found: finding::ranked(found), waits, render, shots, fps })
+}
+
+/// Whether a composition is lit by traced light: its file, or a .tsx beside it or a folder down, names SolariLighting.
+fn traced(tsx: &Path) -> bool {
+    let names = |p: &Path| std::fs::read_to_string(p).is_ok_and(|s| s.contains("SolariLighting"));
+    if names(tsx) {
+        return true;
+    }
+    let Some(dir) = tsx.parent() else { return false };
+    let tsxs = |d: &Path| -> Vec<PathBuf> { std::fs::read_dir(d).into_iter().flatten().flatten().map(|e| e.path()).collect() };
+    tsxs(dir).into_iter().flat_map(|p| if p.is_dir() { tsxs(&p) } else { vec![p] }).filter(|p| p.extension().is_some_and(|x| x == "tsx")).any(|p| names(&p))
+}
+
+/// The findings of the newest hold of each frame of a composition (`raea light steady`), from its project's record.
+fn light_held(tsx: &Path, id: Option<&str>) -> Vec<Finding> {
+    let Some(project) = tsx.canonicalize().ok().and_then(|t| record::up(t.parent()?, ".raea/project")) else { return Vec::new() };
+    let of = record::rel(&project, tsx);
+    let mut newest: std::collections::BTreeMap<i64, Vec<Finding>> = std::collections::BTreeMap::new();
+    for e in record::read(&project).into_iter().filter(|e| e.by == "raea light steady" && e.of == of) {
+        let mine: Vec<Finding> = e.findings.into_iter().filter(|f| id.is_none_or(|i| f.about.iter().any(|a| a.name == i))).collect();
+        if let Some(frame) = mine.first().and_then(|f| f.frames).map(|f| f[0]) {
+            newest.insert(frame, mine);
+        }
+    }
+    newest.into_values().flatten().collect()
 }
 
 /// Where `f` is in `files`, added at the end when it isn't yet: the one run's checks, each file once.

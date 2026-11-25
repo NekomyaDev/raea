@@ -66,9 +66,9 @@ fn query_world_cache_found(world_position_in: vec3<f32>, world_normal: vec3<f32>
         // Cell already exists or is empty - reset lifetime
         if existing_checksum == checksum || existing_checksum == WORLD_CACHE_EMPTY_CELL {
             @if(!WORLD_CACHE_QUERY_ATOMIC_MAX_LIFETIME)
-            atomicStore(&world_cache.life[key], cell_lifetime);
+            atomicStore(&world_cache.life[key], cell_life(cell_lifetime));
             @else
-            atomicMax(&world_cache.life[key], cell_lifetime);
+            atomicMax(&world_cache.life[key], cell_life(cell_lifetime));
         }
 
         if existing_checksum == checksum {
@@ -100,6 +100,10 @@ fn get_cell_size(world_position: vec3<f32>, view_position: vec3<f32>, ray_t: f32
 }
 
 // raea (11-25): bit 1 of constants.world_cache_steady (prepare.rs): a steady cache with the camera where it was last frame
+// raea (11-25): a queried cell's life, SolariLighting::world_cache_cell_lifetime where set (bits 16-31 of
+// constants.world_cache_steady), else the caller's (Solari's 10)
+fn cell_life(caller: u32) -> u32 { let own = constants.world_cache_steady >> 16u; return select(caller, own, own != 0u); }
+
 fn world_cache_still() -> bool { return (constants.world_cache_steady & 2u) != 0u; }
 
 fn quantize_position(world_position: vec3<f32>, quantization_factor: f32) -> vec3<f32> {

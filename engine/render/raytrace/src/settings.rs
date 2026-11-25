@@ -13,6 +13,8 @@ struct Overrides {
     emissive: Option<String>,
     upscale: Option<String>,
     preexposure: Option<f32>,
+    knee: Option<f32>,
+    late: Option<bool>,
     aa: Option<bool>,
     jitter: Option<String>,
     emissive_sharpness: Option<f32>,
@@ -33,6 +35,8 @@ fn overrides() -> &'static Overrides {
             emissive: var("RAEA_SOLARI_EMISSIVE").filter(|v| matches!(v.as_str(), "taa" | "split" | "mask")),
             upscale: var("RAEA_SOLARI_UPSCALE").filter(|v| matches!(v.as_str(), "one" | "two")),
             preexposure: num("RAEA_METALFX_PREEXPOSURE"),
+            late: switch("RAEA_SOLARI_DENOISE_LATE"),
+            knee: var("RAEA_METALFX_KNEE").and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite() && *v >= 0.0),
             aa: switch("RAEA_SOLARI_AA"),
             jitter: var("RAEA_SOLARI_JITTER"),
             emissive_sharpness: num("RAEA_EMIT_TAA_SHARP"),
@@ -51,6 +55,8 @@ pub(crate) fn of(s: Option<&SolariSettings>) -> SolariSettings {
     if let Some(v) = &o.emissive { s.emissive = v.clone(); }
     if let Some(v) = &o.upscale { s.upscale = v.clone(); }
     if let Some(v) = o.preexposure { s.preexposure = v; }
+    if let Some(v) = o.knee { s.knee = v; }
+    if let Some(v) = o.late { s.late = v; }
     if let Some(v) = o.aa { s.aa = v; }
     if let Some(v) = &o.jitter { s.jitter = v.clone(); }
     if let Some(v) = o.emissive_sharpness { s.emissive_sharpness = v; }
@@ -66,6 +72,8 @@ const VARS: &[(&str, &str)] = &[
         ("RAEA_SOLARI_EMISSIVE", "emissive"),
         ("RAEA_SOLARI_UPSCALE", "upscale"),
         ("RAEA_METALFX_PREEXPOSURE", "preexposure"),
+        ("RAEA_METALFX_KNEE", "knee"),
+        ("RAEA_SOLARI_DENOISE_LATE", "late"),
         ("RAEA_SOLARI_AA", "aa"),
         ("RAEA_SOLARI_JITTER", "jitter"),
         ("RAEA_SOLARI_DYNAMIC", "dynamic"),

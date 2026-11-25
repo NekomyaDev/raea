@@ -24,6 +24,11 @@ export interface SolariLightingProps {
   /** initial paths a pixel a frame (1 to 16, 1 by default): N cut the noise of one path N times, at N times its rays.
    * A sunlit room seen through bounces (MALL RAT's court) needs 4 or more to hold still */
   paths?: number;
+  /** the firefly filter: a sample over this many times the mean of its 8x8 pixels is cut back to that after temporal
+   * reuse (off by default; 2 and up). One very bright sample otherwise lingers and spreads: a patch jumps brighter and
+   * takes a second to fall back. Lower holds stiller and loses more light (a room lit by small bulbs: 6 holds still
+   * and reads 0.3 stops darker, 12 half of both; 32 loses nothing and gains little) */
+  firefly?: number;
   /** Solari's world cache, the bounce light it keeps in cells across the scene */
   cache?: {
     /** frames a cell's light is gathered over: steadier and slower to follow a change (Bevy's 32) */
@@ -39,6 +44,9 @@ export interface SolariLightingProps {
     steady?: boolean;
     /** cache updates a frame (1): more converge faster */
     iterations?: number;
+    /** frames a cell lives unqueried (10): a camera that leaves a place and comes back finds its light still built
+     * instead of starting cold; longer lives keep more cells, which the cache's 2^20 slots must hold */
+    life?: number;
     cellSize?: number;
     /** how fast cells grow with distance from the camera (15) */
     lodScale?: number;
@@ -74,6 +82,13 @@ export interface SolariLightingProps {
    * bright sample (a lamp found by one path in many) and lets more fireflies through: 1 kept 0.74 of the desk's
    * light, 16 0.86, 64 0.91. Default 16; RAEA_METALFX_PREEXPOSURE overrides it */
   preexposure?: number;
+  /** where the denoiser's soft knee starts, in its white (1 by default; 0 off). Light above it is denoised as its log
+   * and restored after, so a silhouette against bright sky or a lit doorway doesn't step with the camera's jitter.
+   * RAEA_METALFX_KNEE overrides it */
+  knee?: number;
+  /** denoise after the forward meshes and the sky, so their edges are gathered over frames too instead of stepping
+   * with the camera's jitter. RAEA_SOLARI_DENOISE_LATE overrides it */
+  late?: boolean;
   /** jitter a full-size view too, so the denoiser anti-aliases its edges as it gathers frames. Default true;
    * RAEA_SOLARI_AA=0 overrides it */
   aa?: boolean;
@@ -136,8 +151,10 @@ export interface SolariLightingProps {
     emissiveHistory?: number;
     /** how an emissive surface's history is held to the light about it now: a still pixel within the darkest times
      * stillLow (0.95) and the brightest times stillHigh (1.05); a moving one under the brightest times movingGain (4)
-     * plus movingFloor (0.02) */
-    emissiveClamp?: { stillLow?: number; stillHigh?: number; movingGain?: number; movingFloor?: number };
+     * plus movingFloor (0.02). stillHold (1) is how far a still pixel whose history is a thin line or a
+     * point goes toward its bounds a frame: 0.25 stops an emitter thinner than a pixel flickering (a ceiling tube seen
+     * edge-on), and a bright lamp switched off then leaves its rim for a few frames */
+    emissiveClamp?: { stillLow?: number; stillHigh?: number; stillHold?: number; movingGain?: number; movingFloor?: number };
   };
 }
 
@@ -174,6 +191,7 @@ export function solariConstants(c: SolariLightingProps["constants"]) {
     [taa, "HISTORY_CAP", at(c.emissiveHistory, "emissiveHistory")],
     [taa, "STILL_LOW", at(e.stillLow, "emissiveClamp.stillLow")],
     [taa, "STILL_HIGH", at(e.stillHigh, "emissiveClamp.stillHigh")],
+    [taa, "STILL_HOLD", at(e.stillHold, "emissiveClamp.stillHold")],
     [taa, "MOVING_GAIN", at(e.movingGain, "emissiveClamp.movingGain")],
     [taa, "MOVING_FLOOR", at(e.movingFloor, "emissiveClamp.movingFloor")],
   ]);
@@ -202,6 +220,11 @@ export function solariSettings(p: SolariLightingProps): Record<string, unknown> 
   if (p.emissive !== undefined) v.emissive = p.emissive;
   if (p.upscale !== undefined) v.upscale = p.upscale;
   if (p.preexposure !== undefined) v.preexposure = p.preexposure;
+  if (p.late !== undefined) v.late = p.late;
+  if (p.knee !== undefined) {
+    if (!(Number.isFinite(p.knee) && p.knee >= 0)) throw new RangeError(`SolariLighting: knee is a number from 0, got ${p.knee}`);
+    v.knee = p.knee;
+  }
   if (p.aa !== undefined) v.aa = p.aa;
   // the engine's names for the passes (upscale.rs jitter_gain): "" the denoiser, "0" none
   if (p.jitter !== undefined) v.jitter = p.jitter === "denoiser" ? "" : p.jitter === "none" ? "0" : p.jitter;
@@ -235,6 +258,8 @@ export function SolariLighting(p: SolariLightingProps = {}) {
   field("firstBounce", "first_bounce_probability", p.firstBounce);
   if (p.paths !== undefined && !(Number.isInteger(p.paths) && p.paths >= 1 && p.paths <= 16)) throw new RangeError(`SolariLighting: paths is a whole number from 1 to 16, got ${p.paths}`);
   field("paths", "paths_per_pixel", p.paths, true);
+  if (p.firefly !== undefined && !(p.firefly === 0 || p.firefly >= 2)) throw new RangeError(`SolariLighting: firefly is 0 (off) or a multiplier from 2 up, got ${p.firefly}`);
+  field("firefly", "firefly_cap", p.firefly);
   const c = p.cache ?? {};
   field("cache.frames", "world_cache_max_temporal_samples", c.frames);
   field("cache.lightSamples", "world_cache_direct_light_sample_count", c.lightSamples, true);
@@ -247,6 +272,8 @@ export function SolariLighting(p: SolariLightingProps = {}) {
   // (11-25, MALL RAT's splotches); light that moves (a power cut) lags by the history, so set frames to what it can bear
   if (c.steady) value.world_cache_steady = true;
   field("cache.iterations", "world_cache_update_iterations", c.iterations, true);
+  if (c.life !== undefined && !(Number.isInteger(c.life) && c.life >= 1 && c.life <= 65535)) throw new RangeError(`SolariLighting: cache.life is a whole number of frames from 1 to 65535, got ${c.life}`);
+  field("cache.life", "world_cache_cell_lifetime", c.life, true);
   if (c.bake) {
     value.world_cache_keep = true;
     value.world_cache_steady = true;

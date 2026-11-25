@@ -35,6 +35,15 @@ const MAX: f64 = 1.5;
 const MAX_ENERGY: f64 = 0.25;
 /// How far the held frame's level may move between the first and the last quarter of the measured frames, in stops.
 const MAX_DRIFT: f64 = 0.05;
+/// The frames measured: the last WINDOW of a hold (or its second half, if that's shorter). Fixed, because a slow
+/// wander reads larger over a longer window, so two holds of different lengths wouldn't compare.
+const WINDOW: usize = 75;
+/// What the worst square that moves with the jitter, or flickers, may show, percent: an edge stepping a pixel a frame
+/// reads 20 to 70; a resolved one under 2.
+const MAX_FAST: f64 = 5.0;
+/// The trend across the window a hold's squares may still have (the 95th percentile), percent: over it the light was
+/// still building when it was measured, and what reads as boiling is partly that.
+const MAX_SETTLING: f64 = 5.0;
 
 /// Each square's mean and deviation in time over `frames`, side `k`: (w, h, [(mean, deviation / mean)]).
 fn squares(frames: &[Luma], k: usize) -> (usize, usize, Vec<(f64, f64)>) {
@@ -57,7 +66,7 @@ fn rms(v: impl Iterator<Item = f64>) -> f64 {
 }
 
 /// The measure of held frames (the module's doc), and steady.png's picture: the large squares' deviation.
-pub fn measure(frames: &[Luma]) -> R<(Value, image::GrayImage)> {
+pub fn measure(frames: &[Luma]) -> R<(Value, image::GrayImage, image::RgbImage)> {
     if frames.len() < 8 {
         return Err(format!("{} held frames: 8 at least say whether the light holds still", frames.len()));
     }
@@ -85,12 +94,14 @@ pub fn measure(frames: &[Luma]) -> R<(Value, image::GrayImage)> {
     let level = |f: &[Luma]| f.iter().map(|f| f.y.iter().map(|&v| v as f64).sum::<f64>() / f.y.len().max(1) as f64).sum::<f64>() / f.len() as f64;
     let q = (frames.len() / 4).max(1);
     let drift = (level(&frames[frames.len() - q..]).max(1e-6) / level(&frames[..q]).max(1e-6)).log2();
+    let (kinds, kinds_map) = crate::kinds::kinds(frames, LARGE, LIT, MAX_SHOWN);
     let report = json!({
+        "kinds": kinds,
         "drift": (drift * 1e3).round() / 1e3,
         "frames": frames.len(), "blotch": pct(blotch), "grain": pct(grain), "spread": ((blotch / grain.max(1e-9)) * 100.0).round() / 100.0,
         "worst": pct(worst.0), "worst_at": [worst.1, worst.2], "lit": ((large.iter().filter(lit).count() as f64 / large.len().max(1) as f64) * 100.0).round() / 100.0,
     });
-    Ok((report, map))
+    Ok((report, map, kinds_map))
 }
 
 /// The PNG frames of a folder, in order.
@@ -141,12 +152,26 @@ pub fn report(dir: &Path, max: Option<f64>) -> R<Value> {
     let max = max.unwrap_or(MAX);
     // the second half: the first is the light building from nothing, which a render's lead-in covers
     let files = held(dir)?;
-    let frames: Vec<Luma> = files[files.len() / 2..].iter().map(|p| metric::load(p)).collect::<R<_>>()?;
-    let (mut report, map) = measure(&frames)?;
+    let frames: Vec<Luma> = files[files.len() - WINDOW.min(files.len() - files.len() / 2)..].iter().map(|p| metric::load(p)).collect::<R<_>>()?;
+    let (mut report, map, kinds_map) = measure(&frames)?;
     let png = dir.join("steady.png");
     map.save(&png).map_err(|e| format!("{}: {e}", png.display()))?;
+    let kinds_png = dir.join("steady-kinds.png");
+    kinds_map.save(&kinds_png).map_err(|e| format!("{}: {e}", kinds_png.display()))?;
     let get = |k: &str| report[k].as_f64().unwrap_or(0.0);
-    let ok = get("blotch") <= max && get("worst") <= max * 3.0 && get("drift").abs() <= MAX_DRIFT;
+    let kind = |k: &str, f: &str| report["kinds"][k][f].as_f64().unwrap_or(0.0);
+    // each kind against its own limit, and what failed named: the fixes differ
+    let mut failed: Vec<&str> = Vec::new();
+    if kind("boiling", "rms") > max || kind("boiling", "worst") > max * 3.0 { failed.push("boiling"); }
+    if kind("jitter", "worst") > MAX_FAST { failed.push("jitter"); }
+    if kind("flicker", "worst") > MAX_FAST { failed.push("flicker"); }
+    if get("drift").abs() > MAX_DRIFT { failed.push("drift"); }
+    let ok = failed.is_empty();
+    let unsettled = kind("settling", "p95") > MAX_SETTLING;
+    let failed: Vec<String> = failed.into_iter().map(String::from).collect();
+    report["failed"] = json!(failed);
+    report["unsettled"] = json!(unsettled);
+    report["kinds_picture"] = json!(kinds_png);
     report["max"] = json!(max);
     report["max_drift"] = json!(MAX_DRIFT);
     report["steady"] = json!(ok);
@@ -157,14 +182,74 @@ pub fn report(dir: &Path, max: Option<f64>) -> R<Value> {
 
 /// A report as one line.
 pub fn line(r: &Value) -> String {
+    let k = &r["kinds"];
+    let one = |name: &str| format!("{name} {}% (worst {}% at {},{})", k[name]["rms"], k[name]["worst"], k[name]["worst_at"][0], k[name]["worst_at"][1]);
     format!(
-        "drift {} stops (max {}), blotch {}% (max {}), worst {}% at {},{}, grain {}%, spread {} over {} held frames; {}",
-        r["drift"], r["max_drift"], r["blotch"], r["max"], r["worst"], r["worst_at"][0], r["worst_at"][1], r["grain"], r["spread"], r["frames"], r["picture"].as_str().unwrap_or("")
+        "{}{}, {}{}, {}, settling {}% (p95 {}%){}, drift {} stops (max {}); all movement {}% (blotch), grain {}%, spread {} over {} held frames; {}",
+        one("boiling"), format_args!(" (max {})", r["max"]), one("jitter"), if k["cycle"].as_u64().unwrap_or(0) > 0 { format!(" on a {}-frame cycle", k["cycle"]) } else { String::new() }, one("flicker"),
+        k["settling"]["median"], k["settling"]["p95"], if r["unsettled"] == json!(true) { " STILL SETTLING: hold longer (--frames) before reading the rest" } else { "" },
+        r["drift"], r["max_drift"], r["blotch"], r["grain"], r["spread"], r["frames"], r["kinds_picture"].as_str().unwrap_or("")
     )
+}
+
+/// What a held frame that moves is told, by what moved.
+pub fn why(r: &Value) -> String {
+    let failed: Vec<&str> = r["failed"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    let mut says: Vec<String> = Vec::new();
+    if failed.contains(&"boiling") || failed.contains(&"drift") { says.push(WHY.to_string()); }
+    if failed.contains(&"jitter") { says.push("Jitter: squares that repeat on a short cycle are edges stepping with the camera's sub-pixel jitter, which the temporal resolve should have held: a silhouette against the sky or a clipped-bright opening. Hold it with RAEA_SOLARI_AA=0 to confirm (it goes), then keep the bright side under the resolve's range (exposure, the sky's level) or report it".to_string()); }
+    if failed.contains(&"flicker") { says.push("Flicker: fast and without a cycle is a firefly, a sparkle in a reflection or two faces at one depth: look at the worst square in steady-kinds.png (red), and run raea scene lint for faces in one plane".to_string()); }
+    says.join(" ")
 }
 
 /// What a light that boils is told (boiling: the trade's word for low-frequency patches that crawl on a held frame).
 pub const WHY: &str = "Boiling: patches this size are light built over frames that hasn't settled. On Solari, paths (SolariLighting paths={4}) first, then the world cache, ReSTIR's reuse or the denoiser. Hold the frame with each switched off in turn (cache.steady or a baked cache, RAEA_SOLARI_DENOISE=0, RAEA_SOLARI_PSR=0) to see which; DIR/render.log holds what each render said";
+
+/// The check a held frame's findings carry in the project's record, which `raea check` reads for a traced composition.
+pub const CHECK: &str = "light-steady";
+
+/// A held frame's report as findings, one a kind that failed: about the composition, on the frame held.
+pub fn findings(r: &Value, composition: Option<&str>, frame: i64) -> Vec<raea_core_facts::Finding> {
+    use raea_core_facts::{Finding, Level};
+    let k = &r["kinds"];
+    let num = |v: &Value| v.as_f64().unwrap_or(0.0);
+    let at = |name: &str| format!("{},{}", k[name]["worst_at"][0], k[name]["worst_at"][1]);
+    let mut out = Vec::new();
+    let mut push = |kind: &str, level: Level, says: String, value: f64, limit: f64, fix: &str| {
+        let mut f = Finding::new(CHECK, level, says, "raea light steady").frames(frame, frame + 1).measure(kind, value, "%", Some(limit)).fix(fix);
+        if let Some(c) = composition {
+            f = f.about(c, None);
+        }
+        out.push(f);
+    };
+    let failed: Vec<&str> = r["failed"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+    let max = num(&r["max"]);
+    if failed.contains(&"boiling") {
+        push("boiling", Level::Error, format!("the light boils on frame {frame} held: {}% (worst square {}% at {}; max {max}, worst {})", k["boiling"]["rms"], k["boiling"]["worst"], at("boiling"), max * 3.0), num(&k["boiling"]["worst"]), max * 3.0, WHY);
+    }
+    if failed.contains(&"jitter") {
+        push("jitter", Level::Error, format!("edges step with the camera's jitter on frame {frame} held: worst square {}% at {} on a {}-frame cycle (max {MAX_FAST})", k["jitter"]["worst"], at("jitter"), k["cycle"]), num(&k["jitter"]["worst"]), MAX_FAST, "an edge against the sky, a forward mesh or an emitter left out of the denoiser's history: SolariLighting late and emissive=\"taa\" (the Solari guide)");
+    }
+    if failed.contains(&"flicker") {
+        push("flicker", Level::Error, format!("a square flickers on frame {frame} held: {}% at {} (max {MAX_FAST})", k["flicker"]["worst"], at("flicker")), num(&k["flicker"]["worst"]), MAX_FAST, "a firefly, a sparkle in a reflection or two faces in one plane: look at the square in steady-kinds.png, and run raea scene lint for faces in one plane");
+    }
+    if failed.contains(&"drift") {
+        push("drift", Level::Error, format!("the held frame's light drifts {} stops (max {MAX_DRIFT})", r["drift"]), num(&r["drift"]).abs(), MAX_DRIFT, WHY);
+    }
+    if failed.is_empty() {
+        push("steady", Level::Note, format!("the light holds still on frame {frame} held: {}", line(r)), num(&r["blotch"]), max, "");
+    }
+    if r["unsettled"] == json!(true) {
+        push("settling", Level::Note, format!("the light was still building on frame {frame} held (settling p95 {}%): hold longer, or give the shot a lead-in", k["settling"]["p95"]), num(&k["settling"]["p95"]), MAX_SETTLING, "a still lead-in before the shot, as long as the hold took to settle");
+    }
+    out
+}
+
+/// A held frame's findings kept in `file`'s project's record (nothing outside a project).
+fn keep(file: &str, out: &Path, r: &Value, composition: Option<&str>, frame: i64) {
+    let stamp = raea_io_trace::utc(std::time::SystemTime::now()).1;
+    raea_core_facts::record::keep("raea light steady", Path::new(file), Some(out), &findings(r, composition, frame), Vec::new(), &stamp);
+}
 
 pub fn steady(args: &[String]) -> R<String> {
     let first = args.first().ok_or(format!("usage: {USAGE}"))?;
@@ -179,6 +264,10 @@ pub fn steady(args: &[String]) -> R<String> {
         out
     };
     let mut r = report(&dir, max)?;
+    let held_frame = flag(args, "--frame").and_then(|f| f.parse::<i64>().ok());
+    if let (false, Some(f)) = (Path::new(first).is_dir(), held_frame) {
+        keep(first, dir.parent().unwrap_or(&dir), &r, flag(args, "--composition").as_deref(), f);
+    }
     // --run M: the frame cold against the same frame at the end of M frames played up to it. A cache that gains or
     // loses energy over minutes (MALL RAT's court, 11-24: 7 times brighter inside the long render) shows here and not
     // in a hold
@@ -201,9 +290,9 @@ pub fn steady(args: &[String]) -> R<String> {
         }
         std::fs::write(dir.join("steady.json"), serde_json::to_string_pretty(&r).unwrap_or_default()).map_err(|e| e.to_string())?;
         let said = format!("energy {} stops after {m} frames against the frame cold (max {MAX_ENERGY}), {}", r["energy"], line(&r));
-        return if r["steady"] == json!(true) { Ok(format!("STEADY  {said}")) } else { Err(format!("the light boils: {said}. {WHY}")) };
+        return if r["steady"] == json!(true) { Ok(format!("STEADY  {said}")) } else { Err(format!("the held frame moves ({}): {said}. {}", r["failed"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")).unwrap_or_default(), why(&r))) };
     }
-    if r["steady"] == json!(true) { Ok(format!("STEADY  {}", line(&r))) } else { Err(format!("the light boils: {}. {WHY}", line(&r))) }
+    if r["steady"] == json!(true) { Ok(format!("STEADY  {}", line(&r))) } else { Err(format!("the held frame moves ({}): {}. {}", r["failed"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")).unwrap_or_default(), line(&r), why(&r))) }
 }
 
 #[cfg(test)]
@@ -231,6 +320,7 @@ mod tests {
     #[test]
     fn grain_is_steady_and_blotches_are_not() {
         let still = measure(&frames(0.0, 0.0)).unwrap().0;
+        assert_eq!(still["kinds"]["boiling"]["rms"], 0.0);
         assert_eq!(still["blotch"], 0.0);
         assert_eq!(still["drift"], 0.0);
         // a light that doubles over the held frames: about 0.8 of a stop between the first and the last quarter

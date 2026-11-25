@@ -22,12 +22,28 @@
 @group(0) @binding(5) var color: texture_storage_2d<rgba16float, read_write>;
 // [0].x: the camera's exposure, .y: 1 to split all emission out (RAEA_SOLARI_EMISSIVE=split); [1]: the output's size
 // and the input's (the corner of the colour the main pass drew); [2].xyz: the camera's back, world-space; [3].xy: the
-// jitter MetalFX is told, in input pixels
+// jitter MetalFX is told, in input pixels, .w: where the soft knee starts in the colour (0: none; SolariSettings.knee)
 @group(0) @binding(6) var<uniform> params: array<vec4<f32>, 4>;
 // the emission `main` took out of the colour, at the input's size, for `restore` to put back
 @group(0) @binding(7) var emit: texture_storage_2d<rgba16float, read_write>;
 // MetalFX's denoise strength mask: 1 leaves a pixel undenoised
 @group(0) @binding(8) var mask: texture_storage_2d<r32float, write>;
+// The soft knee (SolariSettings.knee): above W a pixel's light m (its largest channel) goes in as W (1 + ln(m / W)),
+// which meets the line at W with the same slope, and its colour is scaled to match; `expand` undoes it after the
+// denoiser. Logarithmic rather than Reinhard's m / (1 + m): its half floats keep a bright pixel's light to about 0.5%,
+// where Reinhard's curve crowds every highlight just under its ceiling and loses them
+fn compress(c: vec3<f32>) -> vec3<f32> {
+    let w = params[3].w;
+    let m = max(c.r, max(c.g, c.b));
+    if (w <= 0.0 || m <= w) { return c; }
+    return c * (w * (1.0 + log(m / w)) / m);
+}
+fn uncompress(c: vec3<f32>) -> vec3<f32> {
+    let w = params[3].w;
+    let m = max(c.r, max(c.g, c.b));
+    if (w <= 0.0 || m <= w) { return c; }
+    return c * (w * exp(min(m / w - 1.0, 80.0)) / m);
+}
 fn rgb9e5(v: u32) -> vec3<f32> {
     let scale = exp2(f32(i32(extractBits(v, 27u, 5u)) - 15 - 9));
     return vec3<f32>(f32(extractBits(v, 0u, 9u)), f32(extractBits(v, 9u, 9u)), f32(extractBits(v, 18u, 9u))) * scale;
@@ -84,6 +100,7 @@ fn sky(p: vec2<i32>) {
     textureStore(rough, p, vec4<f32>(1.0, 0.0, 0.0, 0.0));
     textureStore(emit, p, vec4<f32>(0.0));
     textureStore(mask, p, vec4<f32>(1.0, 0.0, 0.0, 0.0));
+    textureStore(color, p, vec4<f32>(compress(c), textureLoad(color, p).a));
 }
 fn store(p: vec2<i32>, g: vec4<u32>, s: Surface) {
     textureStore(normal, p, vec4<f32>(s.normal, 0.0));
@@ -95,7 +112,7 @@ fn store(p: vec2<i32>, g: vec4<u32>, s: Surface) {
     if (params[0].y > 0.5) {
         let taken = min(e, c.rgb);
         textureStore(diffuse, p, vec4<f32>(s.diffuse, 1.0));
-        textureStore(color, p, vec4<f32>(c.rgb - taken, c.a));
+        textureStore(color, p, vec4<f32>(compress(c.rgb - taken), c.a));
         textureStore(emit, p, vec4<f32>(taken, 0.0));
         textureStore(mask, p, vec4<f32>(0.0));
         return;
@@ -104,6 +121,7 @@ fn store(p: vec2<i32>, g: vec4<u32>, s: Surface) {
     let share = dot(e, luma) / max(dot(c.rgb, luma), 1e-4);
     textureStore(diffuse, p, vec4<f32>(min(s.diffuse + e / (vec3<f32>(1.0) + e), vec3<f32>(1.0)), 1.0));
     textureStore(mask, p, vec4<f32>(smoothstep(0.3, 0.7, share), 0.0, 0.0, 0.0));
+    textureStore(color, p, vec4<f32>(compress(c.rgb), c.a));
 }
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
@@ -142,5 +160,14 @@ fn restore(@builtin(global_invocation_id) id: vec3<u32>) {
     let t = q - floor(q);
     let e = mix(mix(emitted(i), emitted(i + vec2<i32>(1, 0)), t.x), mix(emitted(i + vec2<i32>(0, 1)), emitted(i + vec2<i32>(1, 1)), t.x), t.y);
     let c = textureLoad(color, p);
-    textureStore(color, p, vec4<f32>(c.rgb + e, c.a));
+    textureStore(color, p, vec4<f32>(uncompress(c.rgb) + e, c.a));
+}
+// the knee undone, with no emission to put back (emissive "mask"): run after the denoiser whenever `restore` isn't
+@compute @workgroup_size(8, 8, 1)
+fn expand(@builtin(global_invocation_id) id: vec3<u32>) {
+    let size = vec2<u32>(params[1].xy);
+    if (id.x >= size.x || id.y >= size.y) { return; }
+    let p = vec2<i32>(id.xy);
+    let c = textureLoad(color, p);
+    textureStore(color, p, vec4<f32>(uncompress(c.rgb), c.a));
 }

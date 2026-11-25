@@ -59,6 +59,7 @@ pub(crate) fn add(app: &mut App) {
     };
     core.add_systems(denoise.after(solari).before(main_opaque_pass_3d).in_set(Core3dSystems::MainPass));
     core.add_systems(denoise_up.before(super::upscale::upscale).in_set(Core3dSystems::EarlyPostProcess));
+    core.add_systems(denoise_late.before(super::upscale::upscale).in_set(Core3dSystems::EarlyPostProcess));
     // Solari's own guides (primary surface replacement: a mirror's pixel takes what it reflects, and a glossy one is as
     // far off as what it reflects, RT34), written for every view; a view's `guides` and `reflection_depth` choose whether
     // its denoiser reads them
@@ -94,7 +95,7 @@ struct View {
 struct Kit {
     /// the guides (and the emissive out), the emissive back in, from this frame or gathered over frames (emit_taa.rs),
     /// and the sampler that reads the gathered emission's history
-    pipeline: Option<(wgpu::ComputePipeline, wgpu::ComputePipeline, wgpu::ComputePipeline, wgpu::Sampler, wgpu::ComputePipeline)>,
+    pipeline: Option<(wgpu::ComputePipeline, wgpu::ComputePipeline, wgpu::ComputePipeline, wgpu::Sampler, wgpu::ComputePipeline, wgpu::ComputePipeline)>,
     views: HashMap<Entity, View>,
     off: bool,
 }
@@ -250,8 +251,23 @@ fn denoise(view: ViewQuery<Viewed>, device: Res<RenderDevice>, mut kit: Local<Ki
     let st = super::settings::of(item.9);
     let scale = item.5.map_or(1.0, |p| p.0.x as f32 / item.0.main_texture().width() as f32);
     super::settings::record(entity, &st, scale, &mut seen);
-    // a view drawn small is denoised and brought up in one pass, unless its upscale is "two"
-    if !st.denoise || (item.7 && st.upscale != "two") {
+    // a view drawn small is denoised and brought up in one pass, unless its upscale is "two"; one whose settings say
+    // `late` after the forward meshes and the sky (denoise_late)
+    if !st.denoise || (item.7 && st.upscale != "two") || (st.late && !item.7) {
+        return;
+    }
+    run(entity, item, &st, &device, &mut kit, &mut ctx, false);
+}
+
+/// After the main pass: a view at its full size whose settings say `late`, so the sky and the forward meshes, drawn with
+/// the jittered camera after Solari, are gathered over frames with the rest. Drawn after the denoiser, they kept the
+/// jitter: a silhouette against the sky stepped a pixel a frame on its 8-frame cycle (MALL RAT t1 frame 1699, steady's
+/// jitter worst square 73%)
+fn denoise_late(view: ViewQuery<Viewed>, device: Res<RenderDevice>, mut kit: Local<Kit>, mut ctx: RenderContext) {
+    let entity = view.entity();
+    let item = view.into_inner();
+    let st = super::settings::of(item.9);
+    if !st.denoise || item.7 || !st.late {
         return;
     }
     run(entity, item, &st, &device, &mut kit, &mut ctx, false);
@@ -307,7 +323,7 @@ fn run(entity: Entity, item: Item, st: &super::SolariSettings, device: &RenderDe
             }
         }
     }
-    let (pipeline, restore, restore_taa, hist_sampler, pipeline_psr) = kit
+    let (pipeline, restore, restore_taa, hist_sampler, pipeline_psr, expand) = kit
         .pipeline
         .get_or_insert_with(|| {
             // read from a project's engine-shaders/ or the checkout when one has them (docs/nobuild.feature NB5b)
@@ -316,7 +332,7 @@ fn run(entity: Entity, item: Item, st: &super::SolariSettings, device: &RenderDe
             let source = format!("{guides}{taa}");
             let module = dev.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("metalfx guides"), source: wgpu::ShaderSource::Wgsl(source.into()) });
             let make = |entry: &str| dev.create_compute_pipeline(&wgpu::ComputePipelineDescriptor { label: Some("metalfx guides"), layout: None, module: &module, entry_point: Some(entry), compilation_options: Default::default(), cache: None });
-            (make("main"), make("restore"), make("restore_taa"), super::emit_taa::sampler(&dev), make("main_psr"))
+            (make("main"), make("restore"), make("restore_taa"), super::emit_taa::sampler(&dev), make("main_psr"), make("expand"))
         })
         .clone();
     let color_view = color.create_view(&Default::default());
@@ -324,7 +340,7 @@ fn run(entity: Entity, item: Item, st: &super::SolariSettings, device: &RenderDe
     let reset = solari.reset || kit.views.get(&entity).is_none_or(|v| v.fresh);
     // the jitter's cycle at this render scale, how long a twig glimpsed through it can stay away (emit_taa.wgsl)
     let cycle = super::upscale::cycle(size.x as f32 / full.x as f32, st.jitter_frames) as f32;
-    let words: [f32; 16] = [cam.exposure, if split { 1.0 } else { 0.0 }, if reset { 1.0 } else { 0.0 }, super::emit_taa::debug(), out_size.x as f32, out_size.y as f32, size.x as f32, size.y as f32, back.x, back.y, back.z, st.emissive_sharpness, jitter.x, jitter.y, cycle, 0.0];
+    let words: [f32; 16] = [cam.exposure, if split { 1.0 } else { 0.0 }, if reset { 1.0 } else { 0.0 }, super::emit_taa::debug(), out_size.x as f32, out_size.y as f32, size.x as f32, size.y as f32, back.x, back.y, back.z, st.emissive_sharpness, jitter.x, jitter.y, cycle, st.knee.max(0.0) * st.preexposure / 16.0];
     let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_ne_bytes()).collect();
     let params = wgpu::util::DeviceExt::create_buffer_init(&dev, &wgpu::util::BufferInitDescriptor { label: Some("metalfx params"), contents: &bytes, usage: wgpu::BufferUsages::UNIFORM });
     let v = kit.views.get_mut(&entity).unwrap();
@@ -390,6 +406,18 @@ fn run(entity: Entity, item: Item, st: &super::SolariSettings, device: &RenderDe
         pass.set_bind_group(0, &back, &[]);
         pass.dispatch_workgroups(out_size.x.div_ceil(8), out_size.y.div_ceil(8), 1);
     }
+    }
+    // the knee undone where no `restore` ran (emissive "mask")
+    if !split && st.knee > 0.0 {
+        let entries = [
+            wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&color_view) },
+            wgpu::BindGroupEntry { binding: 6, resource: params.as_entire_binding() },
+        ];
+        let bind = dev.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("metalfx knee undone"), layout: &expand.get_bind_group_layout(0), entries: &entries });
+        let mut pass = ctx.command_encoder().begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("metalfx knee undone"), timestamp_writes: None });
+        pass.set_pipeline(&expand);
+        pass.set_bind_group(0, &bind, &[]);
+        pass.dispatch_workgroups(out_size.x.div_ceil(8), out_size.y.div_ceil(8), 1);
     }
     use std::sync::atomic::Ordering::Relaxed;
     super::upscale::DENOISED.store(done.is_ok(), Relaxed);

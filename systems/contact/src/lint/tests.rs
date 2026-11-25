@@ -140,3 +140,15 @@ fn a_part_moved_sideways_is_settled_where_it_lands() {
     // moved along the top it stays on it
     assert!(matches!(rest_after(&parts, &ins, 2, Vec3::new(-0.3, 0.0, 0.0)), Rest::On { under: 1, .. }));
 }
+
+#[test]
+fn a_flipbooks_frames_parked_far_away_are_left_out() {
+    let mut parts = vec![part("floor", Vec3::ZERO, Vec3::new(20.0, 0.1, 20.0)), part("bench", Vec3::new(1.0, 0.3, 0.0), Vec3::new(1.5, 0.5, 0.4)), part("water0", Vec3::new(0.0, 0.5, 3.0), Vec3::ONE)];
+    for i in 1..4 {
+        parts.push(part(&format!("water{i}"), Vec3::new(0.0, -900.0, 3.0), Vec3::ONE));
+    }
+    let mut skipped = Vec::new();
+    let (kept, _) = unparked(parts, vec![(); 6], &mut skipped);
+    assert_eq!(kept.iter().map(|p| p.label.as_str()).collect::<Vec<_>>(), ["floor", "bench", "water0"]);
+    assert!(skipped[0].starts_with("3 parts parked"), "{skipped:?}");
+}

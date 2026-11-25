@@ -95,7 +95,7 @@ The same t2 frame (1188), median scene luminance: a cold single frame at 1440 x 
 long-run level depends on how many pixels feed it, and the camcorder's auto-exposure, metered at 160 x 240, set the
 final 14-40x too bright: Shane's overexposed daylight. The path tracer at t2's hold frame (t2-pt) says which is right.
 
-## What fixes the patches, measured (11-25, with raea-be)
+## What fixes the patches, measured (11-25)
 
 The patches are **boiling**, the industry's word for denoised traced light's soft patches crawling over still surfaces
 (NRD, RTXDI, GI-1.0, the ReSTIR papers, Lumen). raea now uses it (docs/skills.glossary.md, the Solari guide's "Boiling");
@@ -147,3 +147,116 @@ Built in the fork, all off unless asked: `paths` (SolariLighting::paths_per_pixe
 and `cache.iterations`, the still-camera query (with `cache.steady`, RAEA_SOLARI_STEADY=1), `cache.bake`/`cache.load`
 (experimental: a whole take overflows 2^20 cells), light selection by a fixed sky share (RAEA_SOLARI_SKY_SHARE, 0 =
 upstream), ReSTIR's spatial radius (RAEA_SOLARI_SPATIAL_RADIUS, 30).
+
+## Telling the movement apart, and what each kind was (11-25, afternoon)
+
+`raea light steady` now tells the kinds of movement in a held frame apart (engine/light/src/kinds.rs). It
+reads each 32 px square over the last 75 held frames and splits its light four ways:
+- **settling**: the square's straight-line trend over the window. The light is still building, which a real render's
+  lead-in covers. It's reported as "unsettled" over p95 5%, not failed;
+- **boiling**: what's left once the trend is removed, where it's slow (lag-1 correlation 0.5 or more);
+- **jitter**: what repeats on a 2-16 frame cycle, the camera's sub-pixel jitter showing through;
+- **flicker**: what is fast with no cycle, such as a firefly, a sparkle in a reflection, or two faces at one depth.
+
+Each kind has its own limit: boiling rms 1.5% with its worst square under three times that, jitter and flicker worst
+5%, and drift 0.05 stops. steady-kinds.png maps them: red is jitter or flicker, green is boiling, blue is settling.
+Before, a single number mixed them, and the fixes differ.
+
+What each turned out to be on MALL RAT:
+
+| hold | before | change | after |
+|---|---|---|---|
+| t1 1699 (silhouettes against the sky) | jitter worst 73%, all 3.73 | the denoiser after the sky and forward meshes (`late`) | jitter worst 3.8%, all 0.76: STEADY |
+| t2 1188 (the court, 4 paths) | jitter worst 10% on the shop signs | `late` + emissive "taa" | jitter 0.09%, worst 2.8% |
+| t2 1188 | boiling 1.27%, worst 5-7% at the frame's right edge | ReSTIR's spatial neighbours reflected back into the frame, not clamped to its border (restir.wesl) | boiling 1.21%, worst 4.25%: STEADY (t1 425: 0.58) |
+| kitchen | 0.63 all, grain 1.38 | `late` | 0.40 all, grain 0.55 |
+
+- **The edges stepping with the jitter: the sky and forward meshes were drawn after the denoiser.** MetalFX ran
+  before Bevy's main opaque pass (metalfx.rs `denoise`). That pass then drew the Environment's background and every
+  forward mesh with the jittered camera, and nothing resolved them. Each silhouette against the sky stepped a pixel
+  a frame on the 8-frame Halton cycle. `SolariSettings.late` (TSX `late`, RAEA_SOLARI_DENOISE_LATE) runs it after
+  the main pass instead. The guides pass already marks a pixel with no G-buffer (sky, forward meshes) undenoised
+  (mask 1) but still gathered.
+- **The shop signs' edges: MALL RAT's `emissive="split"`** puts each emitter's light back after the denoiser frame by
+  frame, so emissive edges keep the jitter. The default "taa" mode gathers them over frames.
+- **A soft knee around MetalFX** (`knee`, RAEA_METALFX_KNEE; logarithmic above the white at preexposure/16) was
+  tried first, on the theory that the resolve averaged bright edges in linear light. It changed nothing at t1 1699
+  (73% either way), because the sky wasn't going through the resolve at all. It keeps the kitchen's mean within
+  0.004 stops. It's kept for now, default 1.
+- **Not the cache's update rate or cell life.** Every cell updated every frame (`cache.updates` 2,000,000) read 1.98
+  and 1.88 against 1.89. Cells kept for 600 frames unqueried (`cache.life`, RAEA_SOLARI_CELL_LIFE) read 1.34 against
+  1.27. A 600-frame hold settles by about frame 300-450, but over a longer window the boiling reads higher, so the
+  detector now fixes its window at 75 frames.
+- **Offline, a 64-frame average of a frozen cache's frames reads 0.50**, the kitchen's level. Of a live cache's, it
+  reads no better than as rendered. So what boils is slow: the light wanders over tens of frames, longer than
+  MetalFX's history.
+
+## Fireflies that linger, the frame's border, and dark squares (11-25, evening)
+
+A baseline of every MALL RAT take at three frames (27 holds) had the frame-wide boiling under 1.5% on all but one,
+and still failed most of them on a single worst square of 5 to 25%. Three different things were in that number.
+
+- **A firefly that lingers.** A hot square's level is flat for 40 frames, jumps 30% in one frame, and takes about 30
+  frames to fall back. One very bright sample (a bounce landing beside a small lamp) gets a large weight, temporal
+  reuse keeps it, and spatial reuse spreads it to its neighbours. Whether a hold passed depended on whether one
+  landed in its 75 frames: t7 187 read 0.88% (worst 10.1%) and, minutes later with nothing changed, 0.39% (worst
+  2.0%). The party room (t5 1440), lit by small bulbs, has them all the time. This is the case RTXDI's boiling filter
+  is for, and ReSTIR PT Enhanced (2026) describes the cause. raea's version is `SolariLighting.firefly_cap` (TSX
+  `firefly`, RAEA_SOLARI_FIREFLY): after temporal reuse, a reservoir whose contribution is over N times the mean of
+  its 8x8 block has its weight cut to that (restir.wesl, a `var<workgroup>` array and a barrier). On t5 1440:
+
+  | firefly | boiling | worst square | frame's mean |
+  |---|---|---|---|
+  | off | 1.63% | 7.4% | 0 stops |
+  | 32 | 1.42% | 4.9% | -0.003 |
+  | 12 | 1.06% | 6.3% | -0.15 |
+  | 6 | 0.73% | 3.0% | -0.29: STEADY |
+  | 3 | 0.69% | 3.9% | -0.38 |
+
+  It costs the light those samples carried, so it is off by default and a composition asks for it. Cutting the
+  sample's confidence, not its weight (ReSTIR PT Enhanced's adaptive cap), lost nearly as much light (-0.22 at 6) and
+  held less still (0.89%).
+- **The frame's border boils more, in a band as wide as the spatial reuse radius.** By distance from the border, in
+  8 px steps: 0.94, 0.79, 0.67, 0.62, 0.57, then 0.5 from 48 px in (t7 187). A border pixel has half a disc of
+  neighbours to reuse from. Reflecting the neighbours into the frame helped the first few pixels (above); permuting
+  the 3 px border strip that `permute_pixel` leaves unpermuted changed nothing (kept, it is harmless). What production
+  renderers do is overscan: render a margin and crop it. raea has no overscan yet.
+- **Dark squares read high as a plain ratio.** The detector divided each square's deviation by its level, so the
+  darkest corners led (12% of nearly nothing). The eye's contrast threshold is constant in bright light (Weber) and
+  rises as the square root of falling luminance in dim light (de Vries-Rose; Barten's model has both). kinds.rs now
+  divides by sqrt(level x 0.05) below a level of 0.05 (linear; about 5 cd/m2 on a 100 cd/m2 display). t5 1440 read
+  2.03% before and 1.59% after on the same frames.
+
+What was looked up and already there: the world cache's lookups are jittered in the tangent plane (GI-1.0 and
+world-space ReSTIR name hash-cell blotches and this cure), and its blend is the adaptive one (Boissé's, in Bevy 0.18).
+
+For moving shots, ReVQ (No-Reference Rendered Video Quality Assessment, arXiv 2510.13349) is the design to follow:
+windows of 5 frames warped onto their last with motion vectors, pixels without a correspondence masked, differences
+over spans of 1 to 4 frames. A first try that chained 32 frames of motion vectors read 10% on a clean shot from the
+warp's own error.
+
+With the firefly filter at 6 on every take, 19 of 24 holds read STEADY (8 of 22 before). What was left, by cause:
+
+- **Emitters thinner than a pixel flickered: the emitter history's clamp.** MALL RAT's ceiling tubes seen edge-on are
+  1 to 3 px tall and changed shape every frame (t6 211 and t8 204: jitter 7.7% and 7.0% in their squares). With the
+  history always taken (RAEA_EMIT_TAA_DEBUG=3) the jitter read 0.01%. emit_taa.wgsl held a still pixel's history
+  inside the range of this frame's samples about it, so a lamp switched off goes dark at once; a tube that some of the
+  jitter's positions miss altogether was cut to black on those frames. Eased (a quarter of the way to those bounds a
+  frame) both holds read STEADY (jitter 2.2% and 1.2%), but lightbench's orb switched off then left +2.52 stops on its
+  tile where it left +0.17 (RT32). Eased only where the history is thin (dark two pixels to both sides, across or
+  down) the tubes read 3.6% and 2.1% and the orb +0.30, its rim. Two stricter tests of "thin" kept the rim out and
+  lost the tubes (5.2 to 6.5%). So the engine's default is as it was (STILL_HOLD 1) and MALL RAT asks for it
+  (`constants={{ emissiveClamp: { stillHold: 0.25 } }}`); the fix for every scene is a count, kept with the history,
+  of the frames a pixel was missed. A softer gather kernel made it worse (11 to 13% at emissiveSharpness 3 and 1.5).
+- **The border** (above): t3 1320's wall at the frame's right edge is lit in 8 px blocks that change each frame, and
+  the corner squares of t5 900 and the court boil past the worst-square limit on some runs. Overscan is
+  docs/raytracing.feature RT40, designed and not built.
+- A hold near the limit passes on one run and fails on the next (t2 922 and t2 2304 failed in the baseline and read
+  STEADY minutes later): what's left there is chance, a firefly landing in the 75 frames or not.
+
+The moving detector (scratch moving3.py, ReVQ's design on raea's own motion vectors and depth) reads 0.5% a frame on
+the court's door swing where the 32-frame chain read 10%, and tells one path a pixel from four (worst square 9.3%
+against 5.8% over 4 frames). It did not tell `late` and emissive "taa" from the settings before them on that shot,
+which has no sky edge or sign in it and whose light changes as the doors open. It needs a moving shot under steady
+light to be judged on before it gates anything.
+

@@ -58,6 +58,16 @@ pub struct SolariSettings {
     /// what MetalFX divides the colour by before it denoises and multiplies it by after: bright light kept, at the cost
     /// of fireflies past 16 (metalfx.rs pre_exposure; RAEA_METALFX_PREEXPOSURE)
     pub preexposure: f32,
+    /// where the denoiser's soft knee starts, in its white (the colour at `preexposure / 16`); 0 turns it off
+    /// (RAEA_METALFX_KNEE). Above it a pixel's light goes in as its log: W (1 + ln(m / W)), its colour scaled to match,
+    /// and comes out undone after the denoiser. MetalFX averages a silhouette against bright sky or a lit doorway in
+    /// linear light, so its jittered edge pixel swung with the sky's share, 8 frames a cycle (MALL RAT t1 frame 1699:
+    /// steady 3.72, 0.81 with the jitter off). Light under the knee is untouched, so it isn't biased
+    pub knee: f32,
+    /// a full-size view denoised after the main pass instead of before it, so the sky and the forward meshes (drawn
+    /// there, with the jittered camera) are gathered over frames too and their edges stop stepping with the jitter
+    /// (metalfx.rs denoise_late; RAEA_SOLARI_DENOISE_LATE)
+    pub late: bool,
     /// a full-size view jittered too, so the denoiser anti-aliases its edges as it gathers frames (RAEA_SOLARI_AA=0)
     pub aa: bool,
     /// which of MetalFX's passes is told the jitter: "" the denoiser, "scaler", "both", "flip", "0" none (and none is
@@ -85,6 +95,8 @@ impl Default for SolariSettings {
             emissive: "taa".into(),
             upscale: "one".into(),
             preexposure: 16.0,
+            knee: 1.0,
+            late: false,
             aa: true,
             jitter: String::new(),
             emissive_sharpness: 6.0,

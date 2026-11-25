@@ -14807,7 +14807,9 @@ name = "raea-light"
 version = "0.1.0"
 dependencies = [
  "image",
+ "raea-core-facts",
  "raea-io-home",
+ "raea-io-trace",
  "raea-runtime-bundle",
  "serde_json",
 ]
