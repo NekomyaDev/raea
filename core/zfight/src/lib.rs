@@ -22,7 +22,6 @@ struct Face {
     n: Vec3,
     d: f32,
     tri: [Vec3; 3],
-    area: f32,
 }
 
 fn face(t: &[Vec3; 3]) -> Option<Face> {
@@ -32,7 +31,7 @@ fn face(t: &[Vec3; 3]) -> Option<Face> {
         return None;
     }
     let n = c / l;
-    Some(Face { n, d: n.dot(t[0]), tri: *t, area: 0.5 * l })
+    Some(Face { n, d: n.dot(t[0]), tri: *t })
 }
 
 type Key = (i32, i32, i32, i64);
@@ -73,12 +72,53 @@ fn overlap(a: &Face, b: &Face) -> bool {
     true
 }
 
+/// What two coplanar faces share: its area, and its middle. One triangle cut by the other's three edges.
+fn shared(a: &Face, b: &Face) -> (f32, Vec3) {
+    let u = a.n.any_orthonormal_vector();
+    let v = a.n.cross(u);
+    let flat = |p: Vec3| Vec2::new(p.dot(u), p.dot(v));
+    let mut poly: Vec<Vec2> = a.tri.iter().map(|p| flat(*p)).collect();
+    let q = b.tri.map(flat);
+    // b's winding in this frame, so its inside is on one known side of each edge
+    let turn = (q[1] - q[0]).perp_dot(q[2] - q[0]).signum();
+    for k in 0..3 {
+        let (e0, e1) = (q[k], q[(k + 1) % 3]);
+        let side = |p: Vec2| (e1 - e0).perp_dot(p - e0) * turn;
+        let mut cut = Vec::with_capacity(poly.len() + 2);
+        for i in 0..poly.len() {
+            let (p0, p1) = (poly[i], poly[(i + 1) % poly.len()]);
+            let (s0, s1) = (side(p0), side(p1));
+            if s0 >= 0.0 {
+                cut.push(p0);
+            }
+            if (s0 > 0.0 && s1 < 0.0) || (s0 < 0.0 && s1 > 0.0) {
+                cut.push(p0 + (p1 - p0) * (s0 / (s0 - s1)));
+            }
+        }
+        poly = cut;
+        if poly.len() < 3 {
+            return (0.0, Vec3::ZERO);
+        }
+    }
+    let mut area = 0.0;
+    let mut mid = Vec2::ZERO;
+    for i in 1..poly.len() - 1 {
+        let t = 0.5 * (poly[i] - poly[0]).perp_dot(poly[i + 1] - poly[0]).abs();
+        area += t;
+        mid += (poly[0] + poly[i] + poly[i + 1]) / 3.0 * t;
+    }
+    if area <= 0.0 {
+        return (0.0, Vec3::ZERO);
+    }
+    let mid = mid / area;
+    (area, u * mid.x + v * mid.y + a.n * a.d)
+}
+
 fn same_plane(a: &Face, b: &Face) -> bool {
     a.n.dot(b.n) >= PARALLEL && (a.n.dot(b.tri[0]) - a.d).abs() <= PLANE
 }
 
-/// One face over another: how many pairs, about how much area (the smaller face of each pair, summed: an upper
-/// bound), and where the first is. `b` None: within `a` itself.
+/// One face over another: how many pairs, the area they share, and the middle of the largest shared patch. `b` None: within `a` itself.
 pub fn overlaps(a: &[[Vec3; 3]], b: Option<&[[Vec3; 3]]>) -> Option<(usize, f32, Vec3)> {
     let o = sorted(a, b);
     o.fight.or(o.twins).or(o.bases)
@@ -129,10 +169,20 @@ pub fn sorted(a: &[[Vec3; 3]], b: Option<&[[Vec3; 3]]>) -> Overlaps {
         buckets.entry(key(f.n, f.d)).or_default().push(i);
     }
     let mut out = Overlaps::default();
-    let add = |to: &mut Option<(usize, f32, Vec3)>, f: &Face, g: &Face| {
-        let e = to.get_or_insert((0, 0.0, (f.tri[0] + f.tri[1] + f.tri[2]) / 3.0));
+    // the largest patch each kind has seen, for where to point
+    let mut most = [0.0f32; 3];
+    let mut add = |kind: usize, to: &mut Option<(usize, f32, Vec3)>, f: &Face, g: &Face| {
+        let (area, mid) = shared(f, g);
+        if area <= 0.0 {
+            return;
+        }
+        let e = to.get_or_insert((0, 0.0, mid));
         e.0 += 1;
-        e.1 += f.area.min(g.area);
+        e.1 += area;
+        if area > most[kind] {
+            most[kind] = area;
+            e.2 = mid;
+        }
     };
     for (i, f) in fa.iter().enumerate() {
         let mut seen: Vec<usize> = Vec::new();
@@ -147,8 +197,13 @@ pub fn sorted(a: &[[Vec3; 3]], b: Option<&[[Vec3; 3]]>) -> Overlaps {
                 if same_plane(f, g) && overlap(f, g) {
                     let y = f.tri[0].y;
                     let base = b.is_some() && f.n.y <= -0.999 && (y - low_a).abs() <= 0.001 && (y - low_b).abs() <= 0.001;
-                    let to = if base { &mut out.bases } else if b.is_some() && twin(f, g) { &mut out.twins } else { &mut out.fight };
-                    add(to, f, g);
+                    if base {
+                        add(0, &mut out.bases, f, g);
+                    } else if b.is_some() && twin(f, g) {
+                        add(1, &mut out.twins, f, g);
+                    } else {
+                        add(2, &mut out.fight, f, g);
+                    }
                 }
             }
         }
@@ -171,7 +226,12 @@ mod tests {
         let floor = quad(0.0, -1.0, 1.0, true);
         let rug = quad(0.0001, 0.0, 0.5, true);
         let (n, area, _) = overlaps(&rug, Some(&floor)).expect("the rug's top fights the floor's");
-        assert!(n >= 2 && area > 0.1, "{n} {area}");
+        // the rug's whole top, 0.5 m², and no more (the floor's triangles are bigger); pointed at inside the rug
+        let at = overlaps(&rug, Some(&floor)).unwrap().2;
+        assert!(n >= 2 && (area - 0.5).abs() < 1e-4 && at.x > 0.0 && at.x < 0.5 && at.z > 0.0 && at.z < 1.0, "{n} {area} {at}");
+        // a strip 2 mm wide along a metre: 20 cm²
+        let (_, strip, _) = overlaps(&quad(0.0, 0.998, 2.0, true), Some(&floor)).expect("a strip over the floor's edge");
+        assert!((strip - 0.002).abs() < 1e-5, "{strip}");
         // 1 cm above it, it doesn't
         assert!(overlaps(&quad(0.01, 0.0, 0.5, true), Some(&floor)).is_none());
         // back to back (a box resting on another: one top up, the other's bottom down) doesn't fight

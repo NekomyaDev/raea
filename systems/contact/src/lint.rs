@@ -402,18 +402,18 @@ pub fn lint(now: &[Item], next: &[Item]) -> (Vec<Value>, usize) {
                     errors += 1;
                 }
                 out.push(json!({"part": parts[i].label, "into": parts[j].label, "check": "zfight", "level": level, "faces": n, "area": (area * 1e6).round() / 1e6, "at": [at.x, at.y, at.z],
-                    "says": format!("{} and {} have faces in one plane over each other ({n} pair{}, up to {:.1} cm² at [{:.3}, {:.3}, {:.3}]): they flicker as the camera moves; lift one by a millimetre or cut the overlap", parts[i].label, parts[j].label, if n == 1 { "" } else { "s" }, area * 1e4, at.x, at.y, at.z)}));
+                    "says": format!("{} and {} have faces in one plane over each other ({n} pair{}, {:.1} cm² shared, most at [{:.3}, {:.3}, {:.3}]): they flicker as the camera moves; lift one by a millimetre or cut the overlap", parts[i].label, parts[j].label, if n == 1 { "" } else { "s" }, area * 1e4, at.x, at.y, at.z)}));
             }
             // the same triangles in both (a slab built into two neighbouring chunks) draw alike whichever wins, unless
             // the two give them different materials: said, never an error
             if let Some((n, area, at)) = over.twins {
                 out.push(json!({"part": parts[i].label, "into": parts[j].label, "check": "doubled", "level": "warning", "faces": n, "area": (area * 1e6).round() / 1e6, "at": [at.x, at.y, at.z],
-                    "says": format!("{} and {} both hold the same {n} face{} ({:.1} cm², first at [{:.3}, {:.3}, {:.3}]): nothing to see where they look alike; take them out of one", parts[i].label, parts[j].label, if n == 1 { "" } else { "s" }, area * 1e4, at.x, at.y, at.z)}));
+                    "says": format!("{} and {} both hold the same {n} face{} ({:.1} cm², most at [{:.3}, {:.3}, {:.3}]): nothing to see where they look alike; take them out of one", parts[i].label, parts[j].label, if n == 1 { "" } else { "s" }, area * 1e4, at.x, at.y, at.z)}));
             }
         }
         if let Some((n, area, at)) = raea_core_zfight::overlaps(&parts[i].tris, None) {
             out.push(json!({"part": parts[i].label, "check": "zfight", "level": "warning", "faces": n, "area": (area * 1e6).round() / 1e6, "at": [at.x, at.y, at.z],
-                "says": format!("{} has faces doubled in one plane inside it ({n} pair{}, up to {:.1} cm²): they flicker where they show; delete the doubles (raea gen check -o)", parts[i].label, if n == 1 { "" } else { "s" }, area * 1e4)}));
+                "says": format!("{} has faces doubled in one plane inside it ({n} pair{}, {:.1} cm² shared): they flicker where they show; delete the doubles (raea gen check -o)", parts[i].label, if n == 1 { "" } else { "s" }, area * 1e4)}));
         }
     }
     (out, errors)

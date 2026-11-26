@@ -72,6 +72,8 @@ const ENCLOSED: f32 = 0.97;
 const PIERCE: f32 = 0.15;
 const PIERCE_MIN: f32 = 0.004;
 const PIERCE_POINTS: usize = 4;
+/// The other part's cell at most this share of the smaller part's diagonal, or its solid can't say where the part is.
+const COARSE: f32 = 0.5;
 /// A part smaller than this across (metres) is a particle: a spark, an ember, a mote.
 const PARTICLE: f32 = 0.08;
 /// An overlap within the bottom of the smaller part (this share of its height) is it seated in what's below.
@@ -204,6 +206,11 @@ fn volume(a: &Solid, wa: &Mat4, b: &Solid, wb: &Mat4) -> Option<Hit> {
     let (slo, shi) = world_box(s, ws);
     let size = (shi - slo).length();
     if size < PARTICLE {
+        return None;
+    }
+    // the other's cells are coarser than the part can be placed in: a node holding every wall of one material in a
+    // mall is voxelized over a metre a cell, and each payphone near one read "47% inside" it (11-25, MALL RAT)
+    if o.cell * ko > COARSE * size {
         return None;
     }
     // no point of the overlap is deeper than half the boxes' common part is thin: two parts side by side stop here
@@ -383,5 +390,16 @@ mod tests {
         assert!(blocked(Vec3::ZERO, Vec3::new(0.0, 0.0, 6.0), 0.05, &seen));
         // beside it
         assert!(!blocked(Vec3::new(3.0, 0.0, 0.0), Vec3::new(3.0, 0.0, 6.0), 0.05, &seen));
+    }
+
+    #[test]
+    fn a_part_smaller_than_the_others_cells_isnt_tested_in_it() {
+        // a stand sunk to its middle in the top of a block: found in a block whose cells place it, and one as large
+        // as the cells in a 60 m block, but not the 2 m stand in the 60 m block (its cells are over a metre)
+        let block = |x: f32| voxelize(&boxed(Vec3::new(0.0, 6.0, 0.0), Vec3::new(x, 12.0, 12.0))).unwrap();
+        let stand = |k: f32| voxelize(&boxed(Vec3::new(0.0, 12.0, 0.0), Vec3::new(0.4 * k, 2.0 * k, 0.4 * k))).unwrap();
+        let w = Mat4::IDENTITY;
+        assert!(test(&stand(1.0), &w, &block(4.0), &w).is_some() && test(&stand(4.0), &w, &block(60.0), &w).is_some());
+        assert!(test(&stand(1.0), &w, &block(60.0), &w).is_none());
     }
 }
