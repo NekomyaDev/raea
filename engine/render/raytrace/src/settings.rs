@@ -36,7 +36,7 @@ fn overrides() -> &'static Overrides {
             upscale: var("RAEA_SOLARI_UPSCALE").filter(|v| matches!(v.as_str(), "one" | "two")),
             preexposure: num("RAEA_METALFX_PREEXPOSURE"),
             late: switch("RAEA_SOLARI_DENOISE_LATE"),
-            knee: var("RAEA_METALFX_KNEE").and_then(|v| v.parse::<f32>().ok()).filter(|v| v.is_finite() && *v >= 0.0),
+            knee: if var("RAEA_METALFX_KNEE").as_deref() == Some("0") { Some(0.0) } else { num("RAEA_METALFX_KNEE") },
             aa: switch("RAEA_SOLARI_AA"),
             jitter: var("RAEA_SOLARI_JITTER"),
             emissive_sharpness: num("RAEA_EMIT_TAA_SHARP"),

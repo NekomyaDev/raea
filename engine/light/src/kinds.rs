@@ -65,7 +65,13 @@ pub fn read(series: &[f64], lit: f64) -> (Kind, f64, f64, usize) {
     // the series against itself p frames later, as a correlation
     let corr = |p: usize| r[p..].iter().zip(&r).map(|(a, b)| a * b).sum::<f64>() / (n - p) as f64 / var.max(1e-18);
     let slow = corr(1) >= SLOW;
-    let (cycle, best) = (2..=CYCLE.min(n / 3)).map(|p| (p, corr(p))).fold((0, 0.0), |a, b| if b.1 > a.1 { b } else { a });
+    let (mut cycle, mut best) = (0, 0.0);
+    for p in 2..=CYCLE.min(n / 3) {
+        let c = corr(p);
+        if c > best {
+            (cycle, best) = (p, c);
+        }
+    }
     if !slow && best >= REPEATS {
         (Kind::Jitter, dev, trend, cycle)
     } else if slow {

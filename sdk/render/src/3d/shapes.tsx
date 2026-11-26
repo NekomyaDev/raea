@@ -369,6 +369,9 @@ export interface MeshProps extends PointerHandlers3d {
   allowOverlap?: boolean;
   /** set at an angle on purpose (a bowl knocked over, a mug on its side): `raea scene lint` doesn't call it tilted */
   posed?: boolean;
+  /** it hangs in the air on purpose, touching nothing (a balloon, a sign on wires that aren't modelled):
+   * `raea scene lint` doesn't call it left in the air */
+  floating?: boolean;
   /** its planned detail, 0 (the hero) to 4 (far): how large it is meant to be seen. A render that shows it finer
    * says so (`lod-closer`); a grey box or a far backdrop is planned at 3 or 4 (PlannedLod) */
   lod?: PlannedLod;

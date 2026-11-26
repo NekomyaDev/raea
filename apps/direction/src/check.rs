@@ -279,9 +279,13 @@ fn check_one(tsx: &Path, id: Option<String>, rules: &[Rule], args: &[String], wh
     Ok(Checked { file: tsx.to_path_buf(), id, found: finding::ranked(found), waits, render, shots, fps })
 }
 
+/// Whether a file names SolariLighting.
+fn names(p: &Path) -> bool {
+    std::fs::read_to_string(p).unwrap_or_default().contains("SolariLighting")
+}
+
 /// Whether a composition is lit by traced light: its file, or a .tsx beside it or a folder down, names SolariLighting.
 fn traced(tsx: &Path) -> bool {
-    let names = |p: &Path| std::fs::read_to_string(p).is_ok_and(|s| s.contains("SolariLighting"));
     if names(tsx) {
         return true;
     }
@@ -292,13 +296,19 @@ fn traced(tsx: &Path) -> bool {
 
 /// The findings of the newest hold of each frame of a composition (`raea light steady`), from its project's record.
 fn light_held(tsx: &Path, id: Option<&str>) -> Vec<Finding> {
-    let Some(project) = tsx.canonicalize().ok().and_then(|t| record::up(t.parent()?, ".raea/project")) else { return Vec::new() };
+    let Some(project) = dunce::canonicalize(tsx).ok().and_then(|t| record::up(t.parent()?, ".raea/project")) else { return Vec::new() };
     let of = record::rel(&project, tsx);
     let mut newest: std::collections::BTreeMap<i64, Vec<Finding>> = std::collections::BTreeMap::new();
-    for e in record::read(&project).into_iter().filter(|e| e.by == "raea light steady" && e.of == of) {
-        let mine: Vec<Finding> = e.findings.into_iter().filter(|f| id.is_none_or(|i| f.about.iter().any(|a| a.name == i))).collect();
-        if let Some(frame) = mine.first().and_then(|f| f.frames).map(|f| f[0]) {
-            newest.insert(frame, mine);
+    for e in record::read(&project) {
+        if e.by != "raea light steady" || e.of != of {
+            continue;
+        }
+        let mut mine = e.findings;
+        if let Some(id) = id {
+            mine.retain(|f| f.about.iter().any(|a| a.name == id));
+        }
+        if let Some(frame) = mine.first().and_then(|f| f.frames) {
+            newest.insert(frame[0], mine);
         }
     }
     newest.into_values().flatten().collect()

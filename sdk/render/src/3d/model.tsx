@@ -187,6 +187,9 @@ export interface ModelProps {
   /** set at an angle on purpose (a bowl knocked over, a mug on its side): `raea scene lint` doesn't call it
    * tilted */
   posed?: boolean;
+  /** it hangs in the air on purpose, touching nothing (a balloon, a sign on wires that aren't modelled):
+   * `raea scene lint` doesn't call it left in the air */
+  floating?: boolean;
   /** a clip to play: its name in the file, or its index */
   animation?: string | number;
   /** live pictures on its materials, by the glTF material's name: `{ monitor_screen: <Screen resolution={[384, 272]}>

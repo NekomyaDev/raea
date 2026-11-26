@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use bevy::math::{Mat4, Vec3};
 use serde_json::{json, Value};
 
-use raea_core_scene::{Item, Part, base_ident, label, parts_of, ray_tri};
+use raea_core_scene::{Item, Part, base_ident, glows, label, parts_of, ray_tri, unparked};
 
 use super::solid_of;
 
@@ -350,11 +350,19 @@ pub fn lint(now: &[Item], next: &[Item]) -> (Vec<Value>, usize) {
                 let under = below.map(|(j, g)| format!("; {} above {}", mm(g), parts[j].label)).unwrap_or_default();
                 ("ok", "mounted", format!("{} is mounted on {} ({}){under}", p.label, named(&parts, *on, *node), mm(*gap)))
             }
-            Rest::Air { below } => match below {
-                Some((j, node, g)) if *g < 0.0 => ("warning", "air", format!("{} touches nothing it could rest on, and {} passes {} into it", p.label, named(&parts, *j, *node), mm(-g))),
-                Some((j, node, g)) => ("warning", "air", format!("{} is in the air, {} above {} and touching nothing", p.label, mm(*g), named(&parts, *j, *node))),
-                None => ("warning", "air", format!("{} has nothing under it and touches nothing", p.label)),
-            },
+            // a thing with weight that touches nothing has been left in the air (a boombox 12 cm over its counter went
+            // through as a warning); a light may hang there, and what's meant to (a balloon, a sign on wires that
+            // aren't modelled) says so with `floating`
+            Rest::Air { below } => {
+                let meant = glows(&items[i]) || items[i].props.get("floating").and_then(Value::as_bool) == Some(true);
+                let level = if meant { "note" } else { "error" };
+                let fix = if meant { "" } else { " (give it floating if it's meant to hang there)" };
+                match below {
+                    Some((j, node, g)) if *g < 0.0 => (level, "air", format!("{} touches nothing it could rest on, and {} passes {} into it{fix}", p.label, named(&parts, *j, *node), mm(-g))),
+                    Some((j, node, g)) => (level, "air", format!("{} is in the air, {} above {} and touching nothing: lower it {:+.4} m{fix}", p.label, mm(*g), named(&parts, *j, *node), -g)),
+                    None => (level, "air", format!("{} has nothing under it and touches nothing{fix}", p.label)),
+                }
+            }
             Rest::Ground => ("ok", "ground", format!("{} is the ground", p.label)),
         };
         // a part left out of the checks, or on its way somewhere, is still a surface; its own faults aren't said
@@ -435,13 +443,20 @@ pub fn lint(now: &[Item], next: &[Item]) -> (Vec<Value>, usize) {
             if parts[j].excused || parts[j].moving || !near(&parts[i], &parts[j]) {
                 continue;
             }
-            if let Some((n, area, at)) = raea_core_zfight::overlaps(&parts[i].tris, Some(&parts[j].tris)) {
+            let over = raea_core_zfight::sorted(&parts[i].tris, Some(&parts[j].tris));
+            if let Some((n, area, at)) = over.fight {
                 let level = if area >= 1e-4 { "error" } else { "warning" };
                 if level == "error" {
                     errors += 1;
                 }
                 out.push(json!({"part": parts[i].label, "into": parts[j].label, "check": "zfight", "level": level, "faces": n, "area": (area * 1e6).round() / 1e6, "at": [at.x, at.y, at.z],
                     "says": format!("{} and {} have faces in one plane over each other ({n} pair{}, up to {:.1} cm² at [{:.3}, {:.3}, {:.3}]): they flicker as the camera moves; lift one by a millimetre or cut the overlap", parts[i].label, parts[j].label, if n == 1 { "" } else { "s" }, area * 1e4, at.x, at.y, at.z)}));
+            }
+            // the same triangles in both (a slab built into two neighbouring chunks) draw alike whichever wins, unless
+            // the two give them different materials: said, never an error
+            if let Some((n, area, at)) = over.twins {
+                out.push(json!({"part": parts[i].label, "into": parts[j].label, "check": "doubled", "level": "warning", "faces": n, "area": (area * 1e6).round() / 1e6, "at": [at.x, at.y, at.z],
+                    "says": format!("{} and {} both hold the same {n} face{} ({:.1} cm², first at [{:.3}, {:.3}, {:.3}]): nothing to see where they look alike; take them out of one", parts[i].label, parts[j].label, if n == 1 { "" } else { "s" }, area * 1e4, at.x, at.y, at.z)}));
             }
         }
         if let Some((n, area, at)) = raea_core_zfight::overlaps(&parts[i].tris, None) {
@@ -450,34 +465,6 @@ pub fn lint(now: &[Item], next: &[Item]) -> (Vec<Value>, usize) {
         }
     }
     (out, errors)
-}
-
-/// How far from the scene a part is parked: a piece swaps a flipbook's frames (MALL RAT's fountain, 88 water models) by
-/// moving the ones not shown hundreds of metres away, where they lie in one another and read as faces fighting.
-const PARKED: f32 = 500.0;
-
-/// The parts in the scene, without those parked far from it (further than PARKED from the median of every part's
-/// centre), each of those said once as not checked.
-fn unparked<T>(parts: Vec<Part>, items: Vec<T>, skipped: &mut Vec<String>) -> (Vec<Part>, Vec<T>) {
-    if parts.len() < 3 {
-        return (parts, items);
-    }
-    let mid = |k: usize| {
-        let mut v: Vec<f32> = parts.iter().map(|p| ((p.lo + p.hi) * 0.5)[k]).collect();
-        v.sort_by(f32::total_cmp);
-        v[v.len() / 2]
-    };
-    let centre = Vec3::new(mid(0), mid(1), mid(2));
-    let mut parked = 0;
-    let kept: (Vec<Part>, Vec<T>) = parts.into_iter().zip(items).filter(|(p, _)| {
-        let far = ((p.lo + p.hi) * 0.5).distance(centre) > PARKED;
-        parked += far as usize;
-        !far
-    }).unzip();
-    if parked > 0 {
-        skipped.push(format!("{parked} part{} parked over {PARKED} m from the scene (a flipbook's frames not shown)", if parked == 1 { "" } else { "s" }));
-    }
-    kept
 }
 
 /// The surface a part would land on and how far it is (negative: sunk): what it rests on, or the nearest surface

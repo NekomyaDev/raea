@@ -142,13 +142,31 @@ fn a_part_moved_sideways_is_settled_where_it_lands() {
 }
 
 #[test]
-fn a_flipbooks_frames_parked_far_away_are_left_out() {
-    let mut parts = vec![part("floor", Vec3::ZERO, Vec3::new(20.0, 0.1, 20.0)), part("bench", Vec3::new(1.0, 0.3, 0.0), Vec3::new(1.5, 0.5, 0.4)), part("water0", Vec3::new(0.0, 0.5, 3.0), Vec3::ONE)];
-    for i in 1..4 {
-        parts.push(part(&format!("water{i}"), Vec3::new(0.0, -900.0, 3.0), Vec3::ONE));
-    }
-    let mut skipped = Vec::new();
-    let (kept, _) = unparked(parts, vec![(); 6], &mut skipped);
-    assert_eq!(kept.iter().map(|p| p.label.as_str()).collect::<Vec<_>>(), ["floor", "bench", "water0"]);
-    assert!(skipped[0].starts_with("3 parts parked"), "{skipped:?}");
+fn a_thing_left_in_the_air_is_an_error_unless_it_glows_or_is_floating() {
+    use raea_core_scene::Node3;
+    use serde_json::json;
+    use std::sync::Arc;
+    let mesh = |name: &str, shape: &str, y: f32, props: Value, material: Value| {
+        let Value::Object(mut p) = props else { unreachable!() };
+        p.insert("name".into(), json!(name));
+        let Value::Object(m) = material else { unreachable!() };
+        let material = Node3 { kind: "StandardMaterial".into(), props: Arc::new(m), shape: None, at: None, kids: Vec::new().into() };
+        Item { kind: "mesh", props: Arc::new(p), shape: Some(shape.into()), at: None, material: Some(material), world: Mat4::from_translation(Vec3::new(0.0, y, 0.0)) }
+    };
+    let floor = || mesh("floor", "box(10, 0.1, 10)", -0.05, json!({}), json!({}));
+    let air = |props: Value, material: Value| {
+        let items = [floor(), mesh("crate", "box(0.4, 0.4, 0.4)", 1.2, props, material)];
+        let (found, errors) = lint(&items, &items);
+        let f = found.iter().find(|f| f["part"] == "crate").expect("the crate is said").clone();
+        (f["check"].as_str().unwrap().to_string(), f["level"].as_str().unwrap().to_string(), f["says"].as_str().unwrap().to_string(), errors)
+    };
+    let (check, level, says, errors) = air(json!({}), json!({}));
+    assert_eq!((check.as_str(), level.as_str(), errors), ("air", "error", 1), "{says}");
+    assert!(says.contains("lower it -1.0000 m") && says.contains("floating"), "{says}");
+    // meant to hang there
+    let (_, level, _, errors) = air(json!({"floating": true}), json!({}));
+    assert_eq!((level.as_str(), errors), ("note", 0));
+    // a lamp's panel
+    let (_, level, _, errors) = air(json!({}), json!({"emissive": {"red": 2200.0, "green": 120.0, "blue": 80.0, "alpha": 1.0}}));
+    assert_eq!((level.as_str(), errors), ("note", 0));
 }

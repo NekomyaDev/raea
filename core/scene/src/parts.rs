@@ -224,3 +224,83 @@ pub fn ray_tri(o: Vec3, d: Vec3, [a, b, c]: [Vec3; 3]) -> Option<f32> {
     let t = e2.dot(q) / det;
     (t >= 0.0).then_some(t)
 }
+
+/// Whether a part's own material gives off light (a lamp's panel, a neon tube): any of its emissive's red, green or
+/// blue above zero. A model's materials are in its file and aren't read here.
+pub fn glows(it: &Item) -> bool {
+    it.material.as_ref().and_then(|m| m.props.get("emissive")).is_some_and(glows_in)
+}
+
+fn above_zero(v: &Value) -> bool {
+    v.as_f64().unwrap_or(0.0) > 0.0
+}
+
+/// A colour as the SDK writes one: [r, g, b, a], { red, green, blue, alpha }, a tagged one ({ LinearRgba: {...} }) or a
+/// CSS string.
+fn glows_in(v: &Value) -> bool {
+    match v {
+        Value::Array(a) => a.iter().take(3).any(above_zero),
+        Value::Object(o) => {
+            let own = ["red", "green", "blue", "r", "g", "b"].iter().filter_map(|k| o.get(*k)).any(above_zero);
+            own || o.values().any(|v| (v.is_object() || v.is_array()) && glows_in(v))
+        }
+        Value::String(c) => !matches!(c.trim_start_matches('#').to_ascii_lowercase().as_str(), "000" | "000000" | "black" | ""),
+        _ => false,
+    }
+}
+
+/// How far from the scene a part is parked: a piece swaps a flipbook's frames (MALL RAT's fountain, 88 water models) by
+/// moving the ones not shown hundreds of metres away, where they lie in one another and read as faces fighting.
+const PARKED: f32 = 500.0;
+
+/// The parts in the scene, without those parked far from it (further than PARKED from the median of every part's
+/// centre), each of those said once as not checked.
+pub fn unparked<T>(parts: Vec<Part>, items: Vec<T>, skipped: &mut Vec<String>) -> (Vec<Part>, Vec<T>) {
+    if parts.len() < 3 {
+        return (parts, items);
+    }
+    let mid = |k: usize| {
+        let mut v: Vec<f32> = parts.iter().map(|p| ((p.lo + p.hi) * 0.5)[k]).collect();
+        v.sort_by(f32::total_cmp);
+        v[v.len() / 2]
+    };
+    let centre = Vec3::new(mid(0), mid(1), mid(2));
+    let mut parked = 0;
+    let kept: (Vec<Part>, Vec<T>) = parts.into_iter().zip(items).filter(|(p, _)| {
+        let far = ((p.lo + p.hi) * 0.5).distance(centre) > PARKED;
+        parked += far as usize;
+        !far
+    }).unzip();
+    if parked > 0 {
+        skipped.push(format!("{parked} part{} parked over {PARKED} m from the scene (a flipbook's frames not shown)", if parked == 1 { "" } else { "s" }));
+    }
+    kept
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_flipbooks_frames_parked_far_away_are_left_out() {
+        let part = |name: &str, c: Vec3, s: Vec3| Part { label: name.into(), tris: Vec::new(), node: Vec::new(), nodes: Vec::new(), lo: c - s / 2.0, hi: c + s / 2.0, excused: false, moving: false };
+        let mut parts = vec![part("floor", Vec3::ZERO, Vec3::new(20.0, 0.1, 20.0)), part("bench", Vec3::new(1.0, 0.3, 0.0), Vec3::new(1.5, 0.5, 0.4)), part("water0", Vec3::new(0.0, 0.5, 3.0), Vec3::ONE)];
+        for i in 1..4 {
+            parts.push(part(&format!("water{i}"), Vec3::new(0.0, -900.0, 3.0), Vec3::ONE));
+        }
+        let mut skipped = Vec::new();
+        let (kept, _) = unparked(parts, vec![(); 6], &mut skipped);
+        assert_eq!(kept.iter().map(|p| p.label.as_str()).collect::<Vec<_>>(), ["floor", "bench", "water0"]);
+        assert!(skipped[0].starts_with("3 parts parked"), "{skipped:?}");
+    }
+
+    #[test]
+    fn a_colour_with_any_light_in_it_glows() {
+        use serde_json::json;
+        assert!(glows_in(&json!({"red": 0.0, "green": 120.0, "blue": 0.0, "alpha": 1.0})));
+        assert!(glows_in(&json!([2200.0, 120.0, 80.0, 1.0])));
+        // black with an alpha of 1 doesn't
+        assert!(!glows_in(&json!({"red": 0.0, "green": 0.0, "blue": 0.0, "alpha": 1.0})));
+        assert!(!glows_in(&json!([0.0, 0.0, 0.0, 1.0])));
+    }
+}
