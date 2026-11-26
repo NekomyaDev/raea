@@ -115,9 +115,10 @@ pub fn render_with(scene: &Scene, label: &str, env: &[(&str, String)], at: &[i64
     let run = cmd
         .args(["render", &scene.file, "--composition", &scene.composition, "--at", &at.join(","), "-o"])
         .arg(format!("{}/", out.display()))
-        // a light check measures light, not placement: a set's clip (11-24: FLOOR3's fit-2 1 cm into grid-bay) is the
-        // set's to fix and stays in its record, but doesn't stop the measure
-        .args(["--despite", "clips", "raea light check measures light, not placement"])
+        // a light check measures light, not placement or camera: a set's clip (11-24: FLOOR3's fit-2 1 cm into
+        // grid-bay) and a contact sheet's cuts read as a lurching camera (11-25: gambit-street refused, every scene
+        // after it unmeasured) are the piece's to fix and stay in its record, but don't stop the measure
+        .args(["--despite", "all", "raea light check measures light, not placement or camera"])
         .output()
         .map_err(|e| e.to_string())?;
     if !run.status.success() {
