@@ -32,10 +32,10 @@
 
 ---
 
-> **0.1.6** (17 November 2026) is the latest release: the engine and the desktop app on macOS (Apple Silicon), Linux
-> (x86_64) and, newest and least tested, Windows 10 and 11 (x86_64). raea is young and moves fast, with a release most
-> days since 0.1.1 on 11 November: expect rough edges, and tell us what you hit in an
-> [issue](https://github.com/shinyobjectz/raea/issues), or from your agent with `raea bug`.
+> raea releases experimentally and often, so the newest release is always on
+> [Releases](https://github.com/shinyobjectz/raea/releases). The app is unstable for now, especially on Linux and
+> Windows: expect rough edges, and tell us what you hit in an [issue](https://github.com/shinyobjectz/raea/issues), or
+> from your agent with `raea bug`.
 
 ## The app
 
