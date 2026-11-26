@@ -7,7 +7,7 @@
 //   2. `raea render` runs there with the same arguments, its paths made relative to that folder, and prints here as
 //      it comes;
 //   3. the files it made or changed land back here: an output path outside the folder (-o /tmp/x.mp4) is written
-//      there under .raea-cloud-out and moved to its place after.
+//      there as .raea-cloud-out-N-NAME at its top and moved to its place after.
 // In a raea repo, with this box signed in, the project's media goes by hash instead (media.ts, CR23): the farm fetches
 // it from R2, and the media the render makes goes to R2 from the farm, here only as pointer files.
 //
@@ -75,7 +75,9 @@ export function plan(args: string[], cwd: string, root?: string): Plan | string 
     const abs = path.resolve(cwd, a)
     if (inside(r, abs)) out.push(path.relative(r, abs) || ".")
     else if (WRITES.has(flag)) {
-      const rel = path.join(".raea-cloud-out", `${moves.length}-${path.basename(abs)}`)
+      // a file at the top of the project, not in a folder: the folder isn't sent, and a still's writer (unlike a video's
+      // encoder) doesn't make one, so a PNG made outside the project was never written (11-25, StreetTalk's storyboards)
+      const rel = `.raea-cloud-out-${moves.length}-${path.basename(abs)}`
       moves.push({ from: rel, to: abs })
       out.push(rel)
     } else return `${a} is outside the project sent to the GPU (${r})`
@@ -95,7 +97,7 @@ async function main() {
   try {
     // kits/ (raea-game-kit) is a link into the box's shared cache, hundreds of MB, that the farm can't follow: a
     // composition uses copies of the kit files it needs in its own folder (11-21: the dangling link hung farm jobs)
-    const excludes = (process.env.RAEA_CLOUD_GPU_EXCLUDE ?? "./.git ./out/* ./.raea-cloud-out ./kits").split(/\s+/).filter(Boolean)
+    const excludes = (process.env.RAEA_CLOUD_GPU_EXCLUDE ?? "./.git ./out/* ./.raea-cloud-out ./.raea-cloud-out-* ./kits").split(/\s+/).filter(Boolean)
     // zstd with GNU tar (the image's); gzip with another tar (a Mac's), whose zstd needs a program of its own
     const gnu = spawnSync("tar", ["--version"], { encoding: "utf8" }).stdout?.includes("GNU")
     const sent = path.join(tmp, "in.tar")
@@ -162,6 +164,7 @@ async function main() {
       }
     }
     rmSync(path.join(p.root, ".raea-cloud-out"), { recursive: true, force: true })
+    for (const m of p.moves) rmSync(path.join(p.root, m.from), { force: true })
     if (finish) {
       const bytes = await finish()
       say(`its media (${(bytes / 1e6).toFixed(1)} MB) went from the farm to R2; here it's pointers (git lfs pull PATH brings one here)`)

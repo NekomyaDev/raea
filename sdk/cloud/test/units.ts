@@ -57,11 +57,11 @@ try {
     args: ["render", "scenes/edit.tsx", "-o", "out/x.mp4", "--frames", "30"],
     moves: [],
   })
-  // an output outside the project is written under .raea-cloud-out and moved after
+  // an output outside the project is written at its top as .raea-cloud-out-N-NAME (no folder to make) and moved after
   const p = plan(["render", "scenes/edit.tsx", "-o", "/tmp/x.mp4", "--words", "words.json"], proj)
   assert.ok(typeof p !== "string")
-  assert.deepEqual(p.args, ["render", "scenes/edit.tsx", "-o", ".raea-cloud-out/0-x.mp4", "--words", "words.json"])
-  assert.deepEqual(p.moves, [{ from: ".raea-cloud-out/0-x.mp4", to: "/tmp/x.mp4" }])
+  assert.deepEqual(p.args, ["render", "scenes/edit.tsx", "-o", ".raea-cloud-out-0-x.mp4", "--words", "words.json"])
+  assert.deepEqual(p.moves, [{ from: ".raea-cloud-out-0-x.mp4", to: "/tmp/x.mp4" }])
   // an input outside the project can't go
   assert.match(plan(["render", "scenes/edit.tsx", "-o", "x.mp4", "--words", "../elsewhere.json"], proj) as string, /outside the project/)
   // no composition: nothing to send
