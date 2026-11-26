@@ -64,6 +64,7 @@ pub(crate) fn kind_name(k: make::Kind) -> &'static str {
         make::Kind::Scene => "scene",
         make::Kind::Kit => "kit",
         make::Kind::Shot => "shot",
+        make::Kind::Cut => "cut",
     }
 }
 
@@ -151,7 +152,7 @@ fn critic(job: &Job, newest: Option<SystemTime>, notes: &str) -> Vec<Value> {
         let what = match job.make.kind {
             make::Kind::Kit => "raea render shared/components/KIT/lineup.tsx --review review/r1",
             make::Kind::Shot => "raea make framing --out review/r1",
-            make::Kind::Scene => "raea render EDIT.tsx --review review/r1",
+            make::Kind::Scene | make::Kind::Cut => "raea render EDIT.tsx --review review/r1",
         };
         return vec![gate("critic", None, false, format!("no round yet: {what}, then raea judge review/r1 --kind {kind} --by claude --brief brief.ts"))];
     };
@@ -195,8 +196,13 @@ pub fn status(job: &Job) -> Value {
         missing.push(format!("NOTES.md with a \"{SKILL_HEADING}\" section (one line per thing that cost time; what the guide got wrong for this job)"));
     }
     let mut gates = checks(job);
-    gates.extend(lods(job, &notes));
-    gates.extend(critic(job, newest, &notes));
+    if job.make.kind == make::Kind::Cut {
+        // the brief's rules over every delivered file (MK25-MK27); its critic is the person's review for now
+        gates.extend(job.make.cut.as_ref().map(|c| crate::cut::gates(c, job.dir)).unwrap_or_default());
+    } else {
+        gates.extend(lods(job, &notes));
+        gates.extend(critic(job, newest, &notes));
+    }
     let (asks, said) = crate::asked::gates(&sheets(job), job.ledger, &notes);
     gates.extend(asks);
     let cap = job.make.rounds.unwrap_or(make::ROUNDS) as usize;

@@ -35,3 +35,5 @@ export const scene = (m: Omit<Make, "kind">): Make => ({ kind: "scene", ...m });
 export const kit = (m: Omit<Make, "kind">): Make => ({ kind: "kit", ...m });
 /** Shots of a built scene, each named for the file it lands as and described in a crew's words. */
 export const shot = (m: Omit<Make, "kind">): Make => ({ kind: "shot", ...m });
+/** ads cut from footage to a client's brief: `cut: {...}` is the brief as rules, each quoting it (docs/make.feature MK25) */
+export const cut = (m: Omit<Make, "kind">): Make => ({ kind: "cut", ...m });

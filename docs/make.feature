@@ -244,6 +244,48 @@ Feature: Make: scenes, kits and shots built to a frozen plan and held to a revie
         with `lod` and its name; the Stop hook holds the agent there as at any open gate
       And a job that plans a level and whose render found none shows the gate clear
 
+  Rule: cuts from a client's brief (MK25-MK27)
+    Shane, 11-25, on StreetTalk's street interview ads, cut by raea cloud agents from three clients' PDF briefs: "you
+    need to make the process of ingesting the brief more direct, or else it's just context that gets lost. It needs to
+    be written as a brief typescript rule that is then enforced ... I need raea make to be the standard". The agents had
+    read the briefs and still shipped what a contract catches: held to one written from Elfster's brief, Gemini's four
+    delivered solos (eight files) had "free, fun, and easy" missing from three, the CTA rewritten in one ("Download
+    Elfster for free in the App Store") and missing from another, no frames check on any final file, and four of the
+    ten cuts the brief asks for in its out/ folder.
+
+    @needs:MK0
+    Scenario: MK25. The brief as rules: `make: cut({...})`
+      Given a client's brief as text beside brief.ts (pdftotext -layout BRIEF.pdf media/brief.txt)
+      When the agent writes `make: cut({ cut: {...} })` before it plans a single cut
+      Then core/brief reads `cut` (cut.rs): `brief` (that text), `count` (how many cuts the brief asks for), `seconds`
+        and `formats`, each cut (id, angle, solo or mashup, hook, captions or a text hook, its own formats and length),
+        `say` (phrases every cut says or shows, or one cut with `every: false`), `never` (phrases no cut says or
+        shows), `cta` (the line every cut ends on, within its last 8 s) and `open` (the brief's [TO CONFIRM] items)
+      And every rule has `from`: the brief's own words for it
+      And each cut lands at a fixed path, out/cuts/<id>_<W>x<H>.mp4 for each of its formats
+      And `doctor` names what the contract still lacks: no count, no cta, an id that isn't [a-z0-9_], a format that
+        isn't W:H, a cut with no length, a rule with no `from`
+
+    @needs:MK25
+    Scenario: MK26. Held to the brief's own words, its count and its open items
+      Given a cut contract
+      Then `raea make status` finds every `from` in the brief's text, compared by letters and digits: a rule the brief
+        doesn't say, or says in other words, holds the job ("quotes")
+      And fewer cuts than `count` hold it, unless an `open` item about "count" has the person's answer ("count")
+      And every `open` item without an answer holds it, so the agent stops at a review to ask ("open")
+
+    @needs:MK25
+    Scenario: MK27. Every delivered file held to the rules, from what's on disk
+      Given a cut's file at its path
+      Then its shape and length are read from its own MP4 boxes, so a file re-encoded after its render is read as it is
+        now ("shape")
+      And its words must be heard after its last change (FILE.words.json, `raea words`), and in them or its render's
+        text (FILE.render.json): every `say` phrase ("say"), no `never` phrase, with the second it's heard ("never"),
+        and the CTA in its last `within` seconds, 85% of its words in order ("cta")
+      And its frames check must have run after its last change (FILE.frames-check.json, `raea frames check`) with no
+        error: no face cut by the frame or a seam, no text under the size floor ("frames")
+      And the cut job has no critic tier yet: the person's review is its critic
+
   Rule: raea cloud (MK19-MK20)
 
     @needs:MK2 @done

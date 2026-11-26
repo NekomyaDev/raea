@@ -19,6 +19,8 @@ pub enum Kind {
     Kit,
     /// stills or camera moves of a built scene, from words
     Shot,
+    /// ads cut from footage to a client's brief: its deliverables, phrases, claims and CTA as rules (cut.rs, MK25)
+    Cut,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -52,6 +54,8 @@ pub struct Make {
     pub deliverables: Vec<String>,
     /// the most critic rounds the job gets; at the cap it is delivered with what's still missing (8 by default)
     pub rounds: Option<u32>,
+    /// a cut job's contract: the brief as rules (cut.rs)
+    pub cut: Option<crate::cut::Cut>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -192,6 +196,7 @@ pub fn dials(kind: Kind) -> &'static [&'static str] {
         Kind::Scene => &["density", "tidiness", "wear", "wetness", "time_of_day", "weather", "atmosphere", "power", "warmth", "look"],
         Kind::Kit => &["count", "variety", "detail", "wear", "wetness", "warmth", "look"],
         Kind::Shot => &["res", "seconds", "lens", "handheld", "look"],
+        Kind::Cut => &["look"],
     }
 }
 
@@ -218,6 +223,7 @@ pub fn deliverables(m: &Make) -> Vec<String> {
         }
         // a shot is a still or a move, so either file answers; apps/make reads `a|b`
         Kind::Shot => m.shots.iter().map(|s| format!("out/shots/{0}.png|out/shots/{0}.mp4", s.name)).collect(),
+        Kind::Cut => m.cut.as_ref().map(crate::cut::deliverables).unwrap_or_default(),
     }
 }
 
@@ -231,6 +237,12 @@ pub fn doctor(m: &Make) -> Vec<String> {
     match m.kind {
         Kind::Shot if m.shots.is_empty() => out.push("no shots: list each with a name and a description".into()),
         Kind::Scene | Kind::Kit if m.objects.is_empty() => out.push("no objects: list every object with its real size and route".into()),
+        _ => {}
+    }
+    match (&m.cut, m.kind) {
+        (Some(c), Kind::Cut) => out.extend(crate::cut::doctor(c)),
+        (None, Kind::Cut) => out.push("no `cut`: the brief as rules (count, cuts, say, never, cta, open), each quoting it".into()),
+        (Some(_), k) => out.push(format!("`cut` is for a cut job, not a {k:?}: drop it, or make this `cut({{...}})`")),
         _ => {}
     }
     if m.kind == Kind::Kit && m.style.is_none() {
