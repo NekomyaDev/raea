@@ -6,23 +6,27 @@
 //! its last change (FILE.frames-check.json, `raea frames check`), with no face cut and no text too small.
 
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use raea_core_brief::cut::{self, Cut, norm};
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use crate::mp4;
-
-fn gate(name: &str, of: Option<&str>, clear: bool, says: String) -> Value {
-    let mut g = json!({"gate": name, "clear": clear, "says": says});
-    if let Some(of) = of {
-        g["of"] = json!(of);
-    }
-    g
+/// One gate as `raea make status` lists it: its name, the file or item it's about, whether it's clear, what it says.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Gate {
+    pub name: &'static str,
+    pub of: Option<String>,
+    pub clear: bool,
+    pub says: String,
 }
 
-fn mtime(p: &Path) -> Option<SystemTime> {
-    std::fs::metadata(p).ok()?.modified().ok()
+fn gate(name: &'static str, of: Option<&str>, clear: bool, says: String) -> Gate {
+    Gate { name, of: of.map(str::to_string), clear, says }
+}
+
+/// A delivered file's width, height and seconds, from its header boxes (io/soft's probe: the media isn't read, and a
+/// file re-encoded after its render is read as it is now).
+fn shape(f: &Path) -> Option<(u32, u32, f64)> {
+    raea_io_soft::probe(f).ok().map(|p| (p.width.round() as u32, p.height.round() as u32, p.secs))
 }
 
 /// FILE.words.json, FILE.frames-check.json, FILE.render.json beside FILE.mp4.
@@ -34,8 +38,9 @@ fn beside(f: &Path, ext: &str) -> PathBuf {
 /// about it now): Ok(json), or Err(why not).
 fn fresh(f: &Path, ext: &str, run: &str) -> Result<Value, String> {
     let r = beside(f, ext);
-    let Some(at) = mtime(&r) else { return Err(format!("never run: {run}")) };
-    if mtime(f).is_some_and(|m| m > at) {
+    let changed = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    let Some(at) = changed(&r) else { return Err(format!("never run: {run}")) };
+    if changed(f).is_some_and(|m| m > at) {
         return Err(format!("the file changed after it: {run} again"));
     }
     std::fs::read_to_string(&r).ok().and_then(|s| serde_json::from_str(&s).ok()).ok_or_else(|| format!("{} isn't JSON: {run} again", r.display()))
@@ -135,23 +140,23 @@ fn in_order(want: &[&str], got: &[&str]) -> f64 {
 const CTA_SHARE: f64 = 0.85;
 
 /// One delivered file's gates: shape, words (say, never, cta) and frames.
-fn file_gates(c: &Cut, plan: &cut::CutPlan, format: &str, f: &Path, rel: &str, said: &mut Vec<(usize, String)>) -> Vec<Value> {
+fn file_gates(c: &Cut, plan: &cut::CutPlan, format: &str, f: &Path, rel: &str, said: &mut Vec<(usize, String)>) -> Vec<Gate> {
     let mut out = Vec::new();
-    let shape = mp4::shape(f);
+    let shape = shape(f);
     match (shape, cut::ratio(format), cut::seconds(c, plan)) {
         (None, ..) => out.push(gate("shape", Some(rel), false, "not an MP4 or MOV with a video track".into())),
-        (Some(s), Some((rw, rh)), len) => {
+        (Some((w, h, secs)), Some((rw, rh)), len) => {
             let mut wrong = Vec::new();
-            let (want, got) = (rw as f64 / rh as f64, s.w as f64 / s.h as f64);
+            let (want, got) = (rw as f64 / rh as f64, w as f64 / h.max(1) as f64);
             if (got / want - 1.0).abs() > 0.02 {
-                wrong.push(format!("{}x{} isn't {format}", s.w, s.h));
+                wrong.push(format!("{w}x{h} isn't {format}"));
             }
             if let Some([a, b]) = len
-                && (s.seconds + 0.05 < a || s.seconds > b + 0.05)
+                && (secs + 0.05 < a || secs > b + 0.05)
             {
-                wrong.push(format!("{:.1} s isn't {a}-{b} s", s.seconds));
+                wrong.push(format!("{secs:.1} s isn't {a}-{b} s"));
             }
-            out.push(gate("shape", Some(rel), wrong.is_empty(), if wrong.is_empty() { format!("{}x{}, {:.1} s", s.w, s.h, s.seconds) } else { wrong.join("; ") }));
+            out.push(gate("shape", Some(rel), wrong.is_empty(), if wrong.is_empty() { format!("{w}x{h}, {secs:.1} s") } else { wrong.join("; ") }));
         }
         _ => {}
     }
@@ -181,7 +186,7 @@ fn file_gates(c: &Cut, plan: &cut::CutPlan, format: &str, f: &Path, rel: &str, s
             out.push(gate("never", Some(rel), banned.is_empty(), if banned.is_empty() { "says and shows none of the banned phrases".into() } else { banned.join("; ") }));
             if let Some(cta) = &c.cta {
                 let within = cta.within.unwrap_or(cut::CTA_WITHIN);
-                let end = shape.map(|s| s.seconds).or_else(|| words.last().map(|w| w.2)).unwrap_or(0.0);
+                let end = shape.map(|s| s.2).or_else(|| words.last().map(|w| w.2)).unwrap_or(0.0);
                 let want_s = norm(&cta.text);
                 let want: Vec<&str> = want_s.split(' ').collect();
                 let share = |got: &[&str]| {
@@ -214,7 +219,7 @@ fn file_gates(c: &Cut, plan: &cut::CutPlan, format: &str, f: &Path, rel: &str, s
 }
 
 /// The cut job's gates over its brief folder `dir`.
-pub fn gates(c: &Cut, dir: &Path) -> Vec<Value> {
+pub fn gates(c: &Cut, dir: &Path) -> Vec<Gate> {
     let mut out = Vec::new();
     // the quotes: each rule is backed by the brief's own words
     match std::fs::read_to_string(dir.join(&c.brief)) {
@@ -252,3 +257,6 @@ pub fn gates(c: &Cut, dir: &Path) -> Vec<Value> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests;

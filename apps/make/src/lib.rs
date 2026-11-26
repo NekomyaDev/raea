@@ -6,11 +6,9 @@
 //!   raea make plan|refs|sheet refs|gen|pick-sheet|pick|prep|kit|framing|lenschart ...   (the steps, USAGE)
 
 pub mod asked;
-pub mod cut;
 pub mod floor;
 pub mod kit;
 pub mod kitout;
-pub mod mp4;
 pub mod plan;
 pub mod sheet;
 pub mod shots;
@@ -214,5 +212,3 @@ pub fn cli(args: &[String]) -> Result<String, String> {
 mod tests;
 #[cfg(test)]
 mod tests_steps;
-#[cfg(test)]
-mod tests_cut;

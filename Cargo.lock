@@ -13896,6 +13896,7 @@ dependencies = [
  "raea-core-facts",
  "raea-core-review",
  "raea-io-home",
+ "raea-runtime-cut-plan",
  "raea-runtime-lod-plan",
  "resvg 0.48.1",
  "serde_json",
@@ -15292,6 +15293,15 @@ version = "0.1.0"
 dependencies = [
  "raea-core-scene",
  "raea-io-home",
+]
+
+[[package]]
+name = "raea-runtime-cut-plan"
+version = "0.1.0"
+dependencies = [
+ "raea-core-brief",
+ "raea-io-soft",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,0 +1,14 @@
+[package]
+name = "raea-runtime-cut-plan"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+publish = false
+description = "A cut job held to its client's brief: every rule quoting the brief, the count and open items, and each delivered file's shape, words heard, banned phrases, CTA and frames check, from what's on disk (docs/make.feature MK25-MK27)"
+
+[dependencies]
+# the contract: `make: cut({...})` on brief.ts
+raea-core-brief = { path = "../../core/brief" }
+# a delivered file's size and length from its header boxes, the media never read
+raea-io-soft = { path = "../../io/soft" }
+serde_json = "1"

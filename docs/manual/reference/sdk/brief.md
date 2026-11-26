@@ -30,10 +30,10 @@ See [Workspaces and projects](../../concepts/workspaces.md) for where each spec 
 <!-- generated:begin by tools/manual-ref/sdk.ts from the SDK's exports and doc comments; edit outside this block -->
 
 ```ts
-import { brief, fingerprint, kit, parts } from "raea/brief"
+import { brief, cut, fingerprint, kit } from "raea/brief"
 ```
 
-`raea/brief` exports 8 functions, 34 types. Source: [sdk/raea/src/brief.ts](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/src/brief.ts).
+`raea/brief` exports 9 functions, 40 types. Source: [sdk/raea/src/brief.ts](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/src/brief.ts).
 
 ## Functions
 
@@ -44,6 +44,14 @@ the project's plan.org.
 
 ```ts
 function brief(b: Brief): Brief
+```
+
+### `cut`
+
+ads cut from footage to a client's brief: `cut: {...}` is the brief as rules, each quoting it
+
+```ts
+function cut(m: Omit<Make, "kind">): Make
 ```
 
 ### `fingerprint`
@@ -205,6 +213,24 @@ type Line = { /** * a character, or "narrator" */ who: string, says: string, /**
 type Make = { kind: MakeKind, /** * the pictures the job answers to (paths beside the brief): what is in it and where for a scene, the style for a kit */ references?: Array<string>, /** * one paragraph every reference prompt carries: era, palette, materials, wear, and one fictional maker */ style?: string, /…
 ```
 
+### `MakeCta`
+
+```ts
+type MakeCta = { text: string, from: string, /** * how near the end it must land, in seconds (8 when left out) */ within?: number, }
+```
+
+### `MakeCut`
+
+```ts
+type MakeCut = { /** * the brief as text, relative to brief.ts (`pdftotext -layout brief.pdf media/brief.txt`): every `from` is found in it */ brief: string, /** * how many cuts the brief asks for; fewer planned is held open until an answered `open` item about "count" says why */ count?: MakeQuoted<number>, /**…
+```
+
+### `MakeCutPlan`
+
+```ts
+type MakeCutPlan = { /** * [a-z0-9_], unique: each format lands as out/cuts/<id>_<W>x<H>.mp4 ("a1_s1_9x16.mp4") */ id: string, angle?: string, /** * solo or mashup */ kind?: string, /** * one of the brief's hook types ("Direct Problem", "Reaction") */ hook?: string, /** * captions, hook (a text hook) or none */ tex…
+```
+
 ### `MakeDial`
 
 ```ts
@@ -220,7 +246,7 @@ type MakeDialValue = number | string
 ### `MakeKind`
 
 ```ts
-type MakeKind = "scene" | "kit" | "shot"
+type MakeKind = "scene" | "kit" | "shot" | "cut"
 ```
 
 ### `MakeObject`
@@ -229,16 +255,34 @@ type MakeKind = "scene" | "kit" | "shot"
 type MakeObject = { /** * snake_case, unique in the job */ id: string, label: string, /** * real height in metres */ h?: number, /** * [width, depth, height] in metres, for boxy things (generators invent depth) */ dims?: [number, number, number], /** * largest extent in metres, for things that lie flat (tools, pap…
 ```
 
+### `MakeOpen`
+
+```ts
+type MakeOpen = { question: string, from: string, /** * what it decides: "count", "cta", "offer", a cut's id... */ about?: string, /** * the person's answer, as they gave it, and who gave it: until then the job can't be done */ answer?: string, by?: string, }
+```
+
 ### `MakeOrigin`
 
 ```ts
 type MakeOrigin = "reference" | "invented"
 ```
 
+### `MakePhrase`
+
+```ts
+type MakePhrase = { /** * as it's said or shown; compared in lower case, by letters and digits ("24/7" and "24-7" are the same) */ text: string, from: string, /** * `say` only: false when one cut saying it is enough */ every?: boolean, }
+```
+
 ### `MakePick`
 
 ```ts
 type MakePick = { /** * "tripo-h31", "meshy", ... */ generator: string, /** * one line: why this one ("sharper dial numerals; Tripo fused the handset to the cradle") */ why: string, }
+```
+
+### `MakeQuoted`
+
+```ts
+type MakeQuoted = { value: T, /** * the brief's own words, as they are in its text */ from: string, }
 ```
 
 ### `MakeRoute`

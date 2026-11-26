@@ -141,15 +141,16 @@ pub fn deliverables(c: &Cut) -> Vec<String> {
 /// Every `from` in the contract, with what it backs: the quotes `raea make status` finds in the brief's text.
 pub fn quotes(c: &Cut) -> Vec<(String, &str)> {
     let mut q: Vec<(String, &str)> = Vec::new();
-    if let Some(n) = &c.count {
-        q.push(("count".into(), &n.from));
+    q.extend(c.count.iter().map(|n| ("count".to_string(), n.from.as_str())));
+    for (what, list) in [("say", &c.say), ("never", &c.never)] {
+        for p in list {
+            q.push((format!("{what} \"{}\"", p.text), &p.from));
+        }
     }
-    q.extend(c.say.iter().map(|p| (format!("say \"{}\"", p.text), p.from.as_str())));
-    q.extend(c.never.iter().map(|p| (format!("never \"{}\"", p.text), p.from.as_str())));
-    if let Some(cta) = &c.cta {
-        q.push(("cta".into(), &cta.from));
+    q.extend(c.cta.iter().map(|t| ("cta".to_string(), t.from.as_str())));
+    for o in &c.open {
+        q.push((format!("open \"{}\"", o.question), &o.from));
     }
-    q.extend(c.open.iter().map(|o| (format!("open \"{}\"", o.question), o.from.as_str())));
     q
 }
 
@@ -173,7 +174,7 @@ pub fn doctor(c: &Cut) -> Vec<String> {
         if !seen.insert(p.id.as_str()) {
             out.push(format!("cut `{}` is listed twice", p.id));
         }
-        if p.id.is_empty() || !p.id.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_') {
+        if !crate::make::is_name(&p.id) {
             out.push(format!("cut `{}`: ids are [a-z0-9_], the file it lands as", p.id));
         }
         let fs = formats(c, p);
@@ -199,8 +200,10 @@ pub fn doctor(c: &Cut) -> Vec<String> {
             out.push(format!("{what} has no `from`: the brief's own words for it"));
         }
     }
-    for p in c.say.iter().chain(&c.never).filter(|p| norm(&p.text).is_empty()) {
-        out.push(format!("phrase `{}` has no letters or digits to find", p.text));
+    for p in c.say.iter().chain(&c.never) {
+        if norm(&p.text).is_empty() {
+            out.push(format!("phrase `{}` has no letters or digits to find", p.text));
+        }
     }
     out
 }

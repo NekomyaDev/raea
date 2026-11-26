@@ -227,6 +227,11 @@ pub fn deliverables(m: &Make) -> Vec<String> {
     }
 }
 
+/// A name a file lands as: [a-z0-9_], not empty.
+pub fn is_name(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
 /// What the plan still lacks before it can be built against, each with what to do. Empty when it's ready.
 pub fn doctor(m: &Make) -> Vec<String> {
     let mut out = Vec::new();
@@ -273,7 +278,7 @@ pub fn doctor(m: &Make) -> Vec<String> {
         if !names.insert(s.name.as_str()) {
             out.push(format!("shot `{}` is listed twice", s.name));
         }
-        if !s.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+        if !is_name(&s.name) {
             out.push(format!("shot `{}`: names are [a-z0-9_], the file it lands as", s.name));
         }
         if s.composition.is_none() {

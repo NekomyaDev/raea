@@ -198,7 +198,7 @@ pub fn status(job: &Job) -> Value {
     let mut gates = checks(job);
     if job.make.kind == make::Kind::Cut {
         // the brief's rules over every delivered file (MK25-MK27); its critic is the person's review for now
-        gates.extend(job.make.cut.as_ref().map(|c| crate::cut::gates(c, job.dir)).unwrap_or_default());
+        gates.extend(job.make.cut.iter().flat_map(|c| raea_runtime_cut_plan::gates(c, job.dir)).map(|g| gate(g.name, g.of.as_deref(), g.clear, g.says)));
     } else {
         gates.extend(lods(job, &notes));
         gates.extend(critic(job, newest, &notes));

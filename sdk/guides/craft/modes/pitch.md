@@ -35,10 +35,11 @@ is only context, and context gets lost. Run `pdftotext -layout BRIEF.pdf media/b
 
 Every rule carries `from`, the brief's own words for it, copied exactly. `raea make status` finds each one in
 media/brief.txt, so a rule can't be made up and a line can't be paraphrased away. Then it holds every file at
-out/cuts/ID_WxH.mp4: its shape and length; its words (`raea words FILE`, run after its last change) for each `say`,
-`never` and the CTA; and its frames check (`raea frames check FILE` on raea cloud; `frames: false` where there is
-none). The job isn't done, and the Stop hook won't let you end, until every gate is clear and every `open` item has
-the person's answer, written in with who gave it.
+out/cuts/ID_WxH.mp4: its shape and length; its words (FILE.words.json, newer than the file: raea cloud writes it
+after every render) for each `say`, `never` and the CTA; and its frames check (FILE.frames-check.json, newer than
+the file: raea cloud's measured faces and text sizes; `frames: false` where there is none). The job isn't done, and
+the Stop hook won't let you end, until every gate is clear and every `open` item has the person's answer, written in
+with who gave it.
 
 ## The decisions
 
