@@ -45,11 +45,17 @@ fn near(k: Key) -> impl Iterator<Item = Key> {
     (-1..=1).flat_map(move |a| (-1..=1).flat_map(move |b| (-1..=1).flat_map(move |c| (-1..=1).map(move |e| (k.0 + a, k.1 + b, k.2 + c, k.3 + e as i64)))))
 }
 
+/// A point of a plane with normal `n` as two numbers, in an orthonormal frame of the plane.
+fn flat_in(n: Vec3) -> impl Fn(Vec3) -> Vec2 {
+    let u = n.any_orthonormal_vector();
+    let v = n.cross(u);
+    move |p| Vec2::new(p.dot(u), p.dot(v))
+}
+
 /// Whether two coplanar faces overlap by more than INSIDE: separating axes in the plane, in an orthonormal frame.
 fn overlap(a: &Face, b: &Face) -> bool {
-    let u = a.n.any_orthonormal_vector();
-    let v = a.n.cross(u);
-    let flat = |t: &[Vec3; 3]| t.map(|p| Vec2::new(p.dot(u), p.dot(v)));
+    let point = flat_in(a.n);
+    let flat = |t: &[Vec3; 3]| t.map(&point);
     let (p, q) = (flat(&a.tri), flat(&b.tri));
     for tri in [&p, &q] {
         for k in 0..3 {
@@ -74,9 +80,10 @@ fn overlap(a: &Face, b: &Face) -> bool {
 
 /// What two coplanar faces share: its area, and its middle. One triangle cut by the other's three edges.
 fn shared(a: &Face, b: &Face) -> (f32, Vec3) {
+    // the same frame flat_in makes, to carry the middle back into the world
     let u = a.n.any_orthonormal_vector();
     let v = a.n.cross(u);
-    let flat = |p: Vec3| Vec2::new(p.dot(u), p.dot(v));
+    let flat = flat_in(a.n);
     let mut poly: Vec<Vec2> = a.tri.iter().map(|p| flat(*p)).collect();
     let q = b.tri.map(flat);
     // b's winding in this frame, so its inside is on one known side of each edge
