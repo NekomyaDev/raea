@@ -159,6 +159,9 @@ pub fn draw(mut scenes: ResMut<Scenes>, mut vello: ResMut<Vello>, device: Res<Re
         }
         // the image atlas (each filtered element is an image in it) as large as the device can make, not Vello's 8192
         vello::low_level::vello_encoding::set_max_atlas_size(device.limits().max_texture_dimension_2d);
+        // and an image larger than the atlas (16384 at most, whatever the device allows) decoded at a size that fits it
+        // (raea#245: an M5's GPU allows 32768, and a 1080x18000 picture was kept whole and refused)
+        blitz_dom::net::set_max_image_side(vello::low_level::vello_encoding::max_atlas_size());
         vello::Renderer::new(
             device,
             vello::RendererOptions { antialiasing_support: vello::AaSupport::area_only(), num_init_threads: std::num::NonZeroUsize::new(1), ..default() },

@@ -585,13 +585,27 @@ impl NetHandler for ResourceHandler<ImageHandler> {
 /// cards ask theirs at the card's size (raea-feed src/feed/media.ts): a 2560x1440 still held 14.7 MB decoded on a card
 /// drawn 1440 pixels wide at most, 4.7 MB fitted (raea-feed e2e/memory.spec.ts). Area-averaged (`thumbnail`), on
 /// premultiplied pixels when any is see-through, so no edge takes the colour of the transparent pixels beside it.
-pub fn fit(url: &str, w: u32, h: u32, mut rgba: Vec<u8>) -> (u32, u32, Vec<u8>) {
+///
+/// And one larger than the GPU's largest texture on either side (`set_max_image_side`, the side of Vello's image
+/// atlas) is scaled down to fit it, its shape kept: Vello can only draw an image that fits its atlas, and a full-page
+/// site capture (1080x18000) drawn 880 wide was refused outright (raea#245). Chrome draws it; here it's drawn from a
+/// copy at most the atlas's side tall, which a page never draws larger than its own size anyway.
+pub fn fit(url: &str, w: u32, h: u32, rgba: Vec<u8>) -> (u32, u32, Vec<u8>) {
+    fit_within(url, w, h, rgba, MAX_IMAGE_SIDE.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+fn fit_within(url: &str, w: u32, h: u32, mut rgba: Vec<u8>, side: u32) -> (u32, u32, Vec<u8>) {
     let query = url.split('#').next().and_then(|u| u.split_once('?')).map_or("", |(_, q)| q);
     let want = |k: &str| query.split('&').find_map(|kv| kv.strip_prefix(k)?.strip_prefix('=')?.parse::<u32>().ok()).filter(|n| *n > 0);
-    let scale = [want("raea-w").map(|n| n as f64 / w.max(1) as f64), want("raea-h").map(|n| n as f64 / h.max(1) as f64)]
-        .into_iter()
-        .flatten()
-        .fold(1.0f64, f64::min);
+    let side = side.max(1) as f64;
+    let scale = [
+        want("raea-w").map(|n| n as f64 / w.max(1) as f64),
+        want("raea-h").map(|n| n as f64 / h.max(1) as f64),
+        (w.max(h) as f64 > side).then(|| side / w.max(h) as f64),
+    ]
+    .into_iter()
+    .flatten()
+    .fold(1.0f64, f64::min);
     if scale >= 1.0 || w == 0 || h == 0 || rgba.len() != w as usize * h as usize * 4 {
         return (w, h, rgba);
     }
@@ -618,6 +632,17 @@ pub fn fit(url: &str, w: u32, h: u32, mut rgba: Vec<u8>) -> (u32, u32, Vec<u8>) 
         }
     }
     (nw, nh, out)
+}
+
+/// raea: the longest side a decoded image keeps (`fit`): Vello's image atlas's side (the GPU's largest texture, 16384 at most).
+/// 16384 until the page's renderer says (systems/page draw.rs, from the device's `max_texture_dimension_2d`)
+static MAX_IMAGE_SIDE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(16384);
+
+/// raea: the longest side an image is decoded at, from here on (the device's largest texture)
+pub fn set_max_image_side(px: u32) {
+    if px > 0 {
+        MAX_IMAGE_SIDE.store(px, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 impl ImageHandler {
@@ -726,5 +751,27 @@ mod tests {
             stylo_to_fontique_style(&oblique(10.0, 20.0)),
             Fq::Oblique(Some(10.0)),
         );
+    }
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::fit_within;
+
+    // raea#245: a picture taller than the GPU's largest texture is decoded at a size that fits it, its shape kept
+    #[test]
+    fn an_image_past_the_atlas_side_is_fitted_to_it() {
+        let (w, h) = (54, 900);
+        let (nw, nh, px) = fit_within("tall.png", w, h, vec![200; (w * h * 4) as usize], 819);
+        assert_eq!((nw, nh), (49, 819));
+        assert_eq!(px.len(), (nw * nh * 4) as usize);
+        assert!(px.iter().all(|&c| c == 200));
+    }
+
+    #[test]
+    fn an_image_inside_it_is_left_alone_and_a_url_s_size_still_wins() {
+        let (w, h) = (54, 800);
+        assert_eq!(fit_within("a.png", w, h, vec![0; (w * h * 4) as usize], 819).0, 54);
+        assert_eq!(fit_within("a.png?raea-h=400", w, h, vec![0; (w * h * 4) as usize], 819).1, 400);
     }
 }

@@ -34,6 +34,8 @@ pub fn device() -> Result<Handles, String> {
 /// Intel's and AMD's PCI vendor ids, as DXGI and Vulkan report them.
 const INTEL: u32 = 0x8086;
 const AMD: u32 = 0x1002;
+/// Qualcomm's (Adreno, on a Windows on ARM PC): DXGI reports "QCOM" as its vendor, some drivers 0x5143
+const QUALCOMM: [u32; 2] = [0x4D4F_4351, 0x5143];
 
 /// Whether the shared device runs on DX12 alone: on Windows, when WGPU_BACKEND isn't set and DX12 lists Intel's or
 /// AMD's own hardware among its GPUs (`dx12`: each one's vendor and kind; WARP, Windows' software DirectX, is a Cpu),
@@ -41,10 +43,12 @@ const AMD: u32 = 0x1002;
 /// 0.1.3's app crashed before its window in AMD's OpenGL driver (atio6axx.dll, 0xc0000005) on a laptop with an AMD
 /// 780M beside an RTX 5060, under wgpu's every-backend default and under Vulkan alike (#155); both ran with
 /// WGPU_BACKEND=dx12. On that laptop DX12's high-performance pick is the NVIDIA GPU, so the rule looks at every GPU,
-/// not the pick. A PC with only NVIDIA's GPUs, a PC with no GPU, a Mac or Linux, and a WGPU_BACKEND someone set
+/// not the pick. A Snapdragon PC's Adreno too (#82): under Vulkan Vello's 2D pages came out striped and with grey boxes
+/// behind fading text on an Adreno X1-85, and on DX12 they were clean. A PC with only NVIDIA's GPUs, a PC with no GPU,
+/// a Mac or Linux, and a WGPU_BACKEND someone set
 /// (Windows' check sets vulkan, for lavapipe) keep wgpu's own pick.
 pub fn dx12_first(windows: bool, env: Option<wgpu::Backends>, dx12: &[(u32, wgpu::DeviceType)]) -> bool {
-    windows && env.is_none() && dx12.iter().any(|&(vendor, kind)| matches!(vendor, INTEL | AMD) && kind != wgpu::DeviceType::Cpu)
+    windows && env.is_none() && dx12.iter().any(|&(vendor, kind)| (matches!(vendor, INTEL | AMD) || QUALCOMM.contains(&vendor)) && kind != wgpu::DeviceType::Cpu)
 }
 
 /// The backends every wgpu instance of raea's asks for (the shared device's, Bevy's own when it isn't there, systems/k's
@@ -147,6 +151,8 @@ mod tests {
         assert!(dx12_first(true, None, &[(AMD, igpu), (0x10de, dgpu), warp]), "#155: an AMD 780M beside an RTX 5060 (DX12 picks the NVIDIA)");
         assert!(dx12_first(true, None, &[(0x10de, dgpu), (AMD, igpu)]), "the same laptop listed NVIDIA first");
         assert!(dx12_first(true, None, &[(AMD, dgpu)]), "an AMD Radeon card");
+        assert!(dx12_first(true, None, &[(0x4D4F_4351, igpu), warp]), "#82: a Snapdragon's Adreno (DXGI's QCOM)");
+        assert!(dx12_first(true, None, &[(0x5143, igpu)]), "#82: an Adreno reported by its PCI id");
         assert!(dx12_first(true, None, &[(INTEL, igpu), (0x10de, dgpu)]), "an Intel laptop with an NVIDIA GPU");
         assert!(!dx12_first(true, Some(Backends::VULKAN), &[(INTEL, igpu)]), "WGPU_BACKEND=vulkan is kept");
         assert!(!dx12_first(true, Some(Backends::DX12), &[(AMD, igpu)]), "WGPU_BACKEND set: wgpu's own read of it");
