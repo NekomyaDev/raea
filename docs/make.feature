@@ -286,6 +286,37 @@ Feature: Make: scenes, kits and shots built to a frozen plan and held to a revie
         error: no face cut by the frame or a seam, no text under the size floor ("frames")
       And the cut job has no critic tier yet: the person's review is its critic
 
+  Rule: any goal, held to rules (MK28-MK29)
+    Shane, 11-26, asking whether raea make is just a version of /goal: "when we use these things, they should just
+    probably be consolidated into one workflow, because in any case we'll have a goal or a brief or something that
+    dictates what we need. And then we essentially just need to make sure that it can't stop unless all the goals pass,
+    or all the rules in the brief". /goal in raea.app's chat let the agent end the loop by writing "GOAL MET"; a goal it
+    can declare met is advice. So /goal and raea make are one loop: a goal is a fifth kind of job, its words become
+    rules in brief.ts before the work starts, and only `raea make status` says it's met.
+
+    @needs:MK2
+    Scenario: MK28. A goal as rules: `make: goal({...})`
+      Given work that isn't a scene, kit, shot or cut (fix a bug, write a page, ship a change)
+      When the agent writes `make: goal({ goal: "the person's words", rules: [...] })` before it starts
+      Then core/brief reads `goal` (goal.rs): the goal as the person said it, and `rules`, each an id and exactly one of
+        `run` (a command that must exit 0 in the brief's folder, within `timeout` seconds, 300 by default), `file` (a
+        file that must exist: a deliverable) or `says` (words that must be true of the work)
+      And `doctor` names what it lacks: no goal, no rules, an id that isn't [a-z0-9_] or is listed twice, a rule with
+        none or more than one of run, file and says, a timeout with no run
+      And a goal job needs no NOTES.md "What the skill got wrong" section (no skill made it) and has no render critic
+
+    @needs:MK28
+    Scenario: MK29. Held by a command's exit and a fresh critic, never the agent's word
+      Given a goal job
+      Then `raea make status` runs every `run` rule at every status, the Stop hook's included, and holds the job on one
+        that fails or outlives its timeout, with its exit code and last line ("run")
+      And a `says` rule is clear only when review/goal.judge.json, written by `raea make judge [DIR] [--by claude|kimi]`
+        (a fresh session that may only read: Read, Grep and Glob), found it true at a time no earlier than the work's
+        newest file, the job's own review/, .raea/, NOTES.md, .git and node_modules left out, compared at whole seconds
+        ("says")
+      And `file` rules are its deliverables, listed under missing
+      And raea.app's /goal is this job: it writes the rules first, and only the status ends the loop
+
   Rule: raea cloud (MK19-MK20)
 
     @needs:MK2 @done

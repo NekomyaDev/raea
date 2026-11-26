@@ -5,6 +5,7 @@
 
 pub mod brief;
 pub mod cut;
+pub mod goal;
 pub mod make;
 pub mod parts;
 pub mod script;
@@ -41,6 +42,7 @@ pub fn declarations() -> String {
         parts::Parts, parts::Concept, parts::Level, parts::Count, parts::Part,
         make::Make, make::Kind, make::Source, make::DialValue, make::Dial, make::Route, make::Origin, make::Pick, make::Object, make::Shot,
         cut::Cut, cut::Quoted<u32>, cut::CutPlan, cut::Phrase, cut::Cta, cut::Open,
+        goal::Goal, goal::GoalRule,
     ));
     out.join("\n\n") + "\n"
 }

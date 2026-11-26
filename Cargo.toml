@@ -195,6 +195,7 @@ members = [
     "runtime/endchecks",
     "runtime/lod-plan",
     "runtime/cut-plan",
+    "runtime/goal-plan",
     "runtime/live",
     "runtime/page",
     "runtime/appscreen",

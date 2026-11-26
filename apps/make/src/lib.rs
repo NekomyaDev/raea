@@ -19,7 +19,8 @@ use std::path::{Path, PathBuf};
 use raea_core_brief::make::Make;
 use serde_json::Value;
 
-pub const USAGE: &str = "raea make status [DIR] [--json] [--plan]   (a scene, kit or shot held to its plan, `make` on brief.ts: what's missing, each gate (renders and checks, raea ask's calibrated questions, the critic on the kind's rubric), the judge's rounds, and whether it's done, decided in code; --plan writes the gates as check lines under the job's task in plan.org; the agent's Stop hook holds it there)
+pub const USAGE: &str = "raea make status [DIR] [--json] [--plan]   (a scene, kit, shot, cut or goal held to its plan, `make` on brief.ts: what's missing, each gate (renders and checks, raea ask's calibrated questions, the critic on the kind's rubric), the judge's rounds, and whether it's done, decided in code; --plan writes the gates as check lines under the job's task in plan.org; the agent's Stop hook holds it there)
+       raea make judge [DIR] [--by claude|kimi]   (a goal job: a fresh critic, which only reads, judges each `says` rule; review/goal.judge.json)
        raea make plan [DIR] [--no-review]   (the plan stop: review/plan/floor-plan.png, a grey-box blockout from the entrance and its review sheets, comparison.png beside reference 0)
        raea make refs [DIR] [--only ID,...] [--model M] [--dry]   (a kit: every object's reference from the style images, in the plan's style, then review/refs.png; --dry quotes it)
        raea make sheet refs [DIR]   (review/refs.png again: the style images, then every reference)
@@ -102,7 +103,7 @@ pub fn status_in(dir: &Path) -> Result<Option<Value>, String> {
 }
 
 /// The flags that take a value: what follows them isn't a positional argument.
-const VALUED: [&str; 7] = ["--only", "--model", "--tripo", "--meshy", "--name", "--to", "--out"];
+const VALUED: [&str; 8] = ["--only", "--model", "--tripo", "--meshy", "--name", "--to", "--out", "--by"];
 
 fn flag<'a>(args: &'a [String], k: &str) -> Option<&'a str> {
     args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).map(String::as_str)
@@ -184,6 +185,7 @@ fn step(verb: &str, args: &[String]) -> Result<String, String> {
 pub fn cli(args: &[String]) -> Result<String, String> {
     match args.get(1).map(String::as_str) {
         Some("status") => {}
+        Some("judge") => return job(&PathBuf::from(positional(args, 2).first().map_or(".", String::as_str))).and_then(|(b, m)| raea_runtime_goal_plan::judge(m.goal.as_ref().ok_or("raea make judge: the job isn't a goal({...})")?, b.parent().unwrap_or(Path::new(".")), flag(args, "--by").unwrap_or("claude")).map(|v| serde_json::to_string_pretty(&v).unwrap_or_default())),
         Some(v @ ("plan" | "refs" | "sheet" | "gen" | "pick-sheet" | "pick" | "prep" | "kit" | "framing" | "lenschart")) => return step(v, args),
         _ => return Err(USAGE.into()),
     }

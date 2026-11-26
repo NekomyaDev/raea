@@ -227,9 +227,18 @@ rounds?: number,
 /**
  * a cut job's contract: the brief as rules (cut.rs)
  */
-cut?: MakeCut, };
+cut?: MakeCut, 
+/**
+ * a goal job's contract: the goal and its rules (goal.rs)
+ */
+goal?: MakeGoal, 
+/**
+ * what the job shows but never delivers, relative to the brief (pictures, render tests, examples): each a file or a
+ * `dir/` (review/ and previews/ when left out). Deliverables are what it hands over; previews are how it got there
+ */
+previews?: Array<string>, };
 
-export type MakeKind = "scene" | "kit" | "shot" | "cut";
+export type MakeKind = "scene" | "kit" | "shot" | "cut" | "goal";
 
 export type MakeSource = "customer" | "reference";
 
@@ -412,3 +421,35 @@ about?: string,
  * the person's answer, as they gave it, and who gave it: until then the job can't be done
  */
 answer?: string, by?: string, };
+
+export type MakeGoal = { 
+/**
+ * the goal as the person said it
+ */
+goal: string, 
+/**
+ * what must hold before the agent may stop: every one, each checked in code or by a fresh critic
+ */
+rules?: Array<MakeGoalRule>, };
+
+export type MakeGoalRule = { 
+/**
+ * a short name: [a-z0-9_], how status, the critic and NOTES.md name it
+ */
+id: string, 
+/**
+ * a command that must exit 0, run in the brief's folder (`bun test`, `raea check edit.tsx`)
+ */
+run?: string, 
+/**
+ * the seconds `run` gets before it counts as failed (300 when left out)
+ */
+timeout?: number, 
+/**
+ * a file that must exist, relative to the brief (`a|b`: either; `dir/`: three or more pictures in it)
+ */
+file?: string, 
+/**
+ * words that must be true of the work, judged by a fresh critic (`raea make judge`), never by the agent that did it
+ */
+says?: string, };

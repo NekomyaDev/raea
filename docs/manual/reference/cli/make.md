@@ -5,7 +5,7 @@ order: 44
 sources: ["apps/make/src/lib.rs", "apps/make/src/status.rs", "apps/make/src/asked.rs", "apps/make/src/plan.rs", "apps/make/src/kit.rs", "apps/make/src/kitout.rs", "apps/make/src/shots.rs", "apps/make/src/floor.rs", "apps/make/src/sheet.rs", "core/brief/src/make.rs", "apps/check/make/src/lib.rs"]
 ---
 
-`raea make status` reads the job on a project's brief.ts (`make: scene({...})`, `kit({...})` or `shot({...})` from
+`raea make status` reads the job on a project's brief.ts (`make: scene({...})`, `kit({...})`, `shot({...})`, `cut({...})` or `goal({...})` from
 `raea/brief`) and says what's still missing, from what's on disk and never from what the agent says:
 
 - the kind's deliverables (a scene's three or more stills; a kit's GLB, LOD1 and thumbnail per object, its lineup
@@ -25,6 +25,24 @@ sources: ["apps/make/src/lib.rs", "apps/make/src/status.rs", "apps/make/src/aske
   answered in NOTES.md. A question not calibrated yet is advice: status lists what it flagged and doesn't wait on it.
   An answer counts for the sheet it was asked of, matched by the file's bytes, so a sheet rendered again is asked
   again.
+
+A goal job (`goal({...})`, what raea.app's `/goal` writes) is any other work: the goal in your words and the rules
+that must hold before the agent stops. A `run` rule is a command that must exit 0 in the brief's folder (status runs
+it every time, 300 seconds unless its `timeout` says otherwise); a `file` rule is a deliverable; a `says` rule is
+words that must be true of the work, judged by a fresh critic that may only read: `raea make judge` asks one
+(`--by claude` or `kimi`) and keeps its verdict in review/goal.judge.json, and the rule clears only while that verdict
+is no older than the work's newest file. A goal job needs no NOTES.md section and has no render critic.
+
+```ts
+make: goal({
+  goal: "the export plays and the README says how to run it",
+  rules: [
+    { id: "tests", run: "bun test" },
+    { id: "export", file: "out/final.mp4" },
+    { id: "readme", says: "README.md says how to install and run it, in order" },
+  ],
+}),
+```
 
 `--plan` writes the gates as check lines under the job's own task in the project's plan.org, keeping the person's
 mark (DONE, DROPPED) and their own lines; the Stop hook runs it so.
@@ -80,7 +98,8 @@ raea make lenschart counter_push
 ## Usage
 
 ```sh
-raea make status [DIR] [--json] [--plan]   (a scene, kit or shot held to its plan, `make` on brief.ts: what's missing, each gate (renders and checks, raea ask's calibrated questions, the critic on the kind's rubric), the judge's rounds, and whether it's done, decided in code; --plan writes the gates as check lines under the job's task in plan.org; the agent's Stop hook holds it there)
+raea make status [DIR] [--json] [--plan]   (a scene, kit, shot, cut or goal held to its plan, `make` on brief.ts: what's missing, each gate (renders and checks, raea ask's calibrated questions, the critic on the kind's rubric), the judge's rounds, and whether it's done, decided in code; --plan writes the gates as check lines under the job's task in plan.org; the agent's Stop hook holds it there)
+raea make judge [DIR] [--by claude|kimi]   (a goal job: a fresh critic, which only reads, judges each `says` rule; review/goal.judge.json)
 raea make plan [DIR] [--no-review]   (the plan stop: review/plan/floor-plan.png, a grey-box blockout from the entrance and its review sheets, comparison.png beside reference 0)
 raea make refs [DIR] [--only ID,...] [--model M] [--dry]   (a kit: every object's reference from the style images, in the plan's style, then review/refs.png; --dry quotes it)
 raea make sheet refs [DIR]   (review/refs.png again: the style images, then every reference)
@@ -99,6 +118,7 @@ Headless: it needs nothing running and opens no window. Takes up to 5 arguments 
 
 | Flag | Takes | What it does |
 | --- | --- | --- |
+| `--by` | `claude\|kimi` | The critic `judge` asks, a fresh session that may only read (default `claude`). |
 | `--dry` | – | Quote the generation (refs, gen) and make nothing. |
 | `--json` | – | Print the status as JSON: missing, gates, judge, done, short and why. |
 | `--meshy` | `M` | The Meshy model for `gen` (default `fal:meshy/v7.1/image-to-3d`). |

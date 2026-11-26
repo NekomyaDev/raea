@@ -7,7 +7,7 @@
 //
 // The types are generated from the Rust schemas (core/brief, raea-core-brief) into brief.gen.ts, so what tsc checks is
 // what raea reads: `raea context` evaluates the module and Rust validates its default export again.
-import type { Brief, Make, Parts, Script, Taste } from "./brief.gen";
+import type { Brief, Make, MakeGoal, Parts, Script, Taste } from "./brief.gen";
 
 export type * from "./brief.gen";
 export { fingerprint } from "./fingerprint";
@@ -37,3 +37,7 @@ export const kit = (m: Omit<Make, "kind">): Make => ({ kind: "kit", ...m });
 export const shot = (m: Omit<Make, "kind">): Make => ({ kind: "shot", ...m });
 /** ads cut from footage to a client's brief: `cut: {...}` is the brief as rules, each quoting it (docs/make.feature MK25) */
 export const cut = (m: Omit<Make, "kind">): Make => ({ kind: "cut", ...m });
+/** any other work held to a goal (`/goal`): the goal in the person's words and the rules that must hold before the agent
+ *  stops, each a command that must pass (`run`), a file that must exist (`file`) or words a fresh critic judges
+ *  (`says`, by `raea make judge`). `raea make status` holds the agent to every one. */
+export const goal = ({ goal, rules, ...m }: MakeGoal & Omit<Make, "kind" | "goal">): Make => ({ kind: "goal", goal: { goal, rules }, ...m });

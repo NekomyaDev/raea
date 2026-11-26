@@ -15,6 +15,8 @@ raea-core-facts = { path = "../../core/facts" }
 raea-runtime-lod-plan = { path = "../../runtime/lod-plan" }
 # a cut job's gates: its client's brief as rules, held over the delivered files (MK25-MK27)
 raea-runtime-cut-plan = { path = "../../runtime/cut-plan" }
+# a goal job's gates: its commands and a fresh critic's verdict on its words (/goal)
+raea-runtime-goal-plan = { path = "../../runtime/goal-plan" }
 # the judge's rounds, passes and blocking defects, read as it keeps them
 raea-app-judge = { path = "../judge" }
 # the make questions, their calibrations and a sheet's ident, as raea ask keeps them (MK4)

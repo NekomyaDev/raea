@@ -143,7 +143,7 @@ fn critic(job: &Job, newest: Option<SystemTime>, notes: &str) -> Vec<Value> {
         let what = match job.make.kind {
             make::Kind::Kit => "raea render shared/components/KIT/lineup.tsx --review review/r1",
             make::Kind::Shot => "raea make framing --out review/r1",
-            make::Kind::Scene | make::Kind::Cut => "raea render EDIT.tsx --review review/r1",
+            make::Kind::Scene | make::Kind::Cut | make::Kind::Goal => "raea render EDIT.tsx --review review/r1",
         };
         return vec![gate("critic", None, false, format!("no round yet: {what}, then raea judge review/r1 --kind {kind} --by claude --brief brief.ts"))];
     };
@@ -183,7 +183,7 @@ pub fn status(job: &Job) -> Value {
         }
     }
     let notes = notes_text(job.dir).unwrap_or_default();
-    if !notes.to_lowercase().contains(&SKILL_HEADING.to_lowercase()) {
+    if job.make.kind != make::Kind::Goal && !notes.to_lowercase().contains(&SKILL_HEADING.to_lowercase()) {
         missing.push(format!("NOTES.md with a \"{SKILL_HEADING}\" section (one line per thing that cost time; what the guide got wrong for this job)"));
     }
     let mut gates = checks(job);
@@ -191,6 +191,7 @@ pub fn status(job: &Job) -> Value {
     match (&job.make.cut, job.make.kind) {
         // a cut job: its brief's rules over every delivered file (MK25-MK27), and the person's review its critic
         (Some(c), make::Kind::Cut) => gates.extend(raea_runtime_cut_plan::gates(c, job.dir).into_iter().map(|g| gate(g.name, g.of.as_deref(), g.clear, g.says))),
+        (_, make::Kind::Goal) => gates.extend(job.make.goal.iter().flat_map(|g| raea_runtime_goal_plan::gates(g, job.dir)).map(|g| gate(g.name, g.of.as_deref(), g.clear, g.says))),
         _ => gates.extend(critic(job, newest, &notes)),
     }
     let (asks, said) = crate::asked::gates(&sheets(job), job.ledger, &notes);
@@ -215,6 +216,7 @@ pub fn status(job: &Job) -> Value {
         "gates": gates,
         "judge": {"rounds": job.rounds.len(), "cap": cap, "passesInARow": advice["passesInARow"], "changeApproach": advice["stall"], "again": advice["again"]},
         "plan": make::doctor(job.make),
+        "files": {"deliverables": make::deliverables(job.make), "previews": make::previews(job.make)},
         "advice": said,
         "why": why,
     })
@@ -239,6 +241,6 @@ pub fn text(s: &Value) -> String {
         t.push(format!("  {} {}{of}: {}", if g["clear"] == true { "ok  " } else { "open" }, g["gate"].as_str().unwrap_or(""), g["says"].as_str().unwrap_or("")));
     }
     let j = &s["judge"];
-    t.push(format!("judge: {} of {} rounds, {} passes in a row{}", j["rounds"], j["cap"], j["passesInARow"], if j["changeApproach"] == true { "; the same defect keeps coming back: change the approach for that part, not the dose" } else { "" }));
+    if s["kind"] != "goal" { t.push(format!("judge: {} of {} rounds, {} passes in a row{}", j["rounds"], j["cap"], j["passesInARow"], if j["changeApproach"] == true { "; the same defect keeps coming back: change the approach for that part, not the dose" } else { "" })); }
     t.join("\n")
 }

@@ -13897,6 +13897,7 @@ dependencies = [
  "raea-core-review",
  "raea-io-home",
  "raea-runtime-cut-plan",
+ "raea-runtime-goal-plan",
  "raea-runtime-lod-plan",
  "resvg 0.48.1",
  "serde_json",
@@ -15425,6 +15426,14 @@ dependencies = [
  "raea-sys-stage",
  "serde_json",
  "wgpu",
+]
+
+[[package]]
+name = "raea-runtime-goal-plan"
+version = "0.1.0"
+dependencies = [
+ "raea-core-brief",
+ "serde_json",
 ]
 
 [[package]]

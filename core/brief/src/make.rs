@@ -21,6 +21,8 @@ pub enum Kind {
     Shot,
     /// ads cut from footage to a client's brief: its deliverables, phrases, claims and CTA as rules (cut.rs, MK25)
     Cut,
+    /// any other work held to a goal: commands that must pass, files that must exist, words a critic judges (goal.rs)
+    Goal,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -56,6 +58,13 @@ pub struct Make {
     pub rounds: Option<u32>,
     /// a cut job's contract: the brief as rules (cut.rs)
     pub cut: Option<crate::cut::Cut>,
+    /// a goal job's contract: the goal and its rules (goal.rs)
+    pub goal: Option<crate::goal::Goal>,
+    /// what the job shows but never delivers, relative to the brief (pictures, render tests, examples): each a file or a
+    /// `dir/` (review/ and previews/ when left out). Deliverables are what it hands over; previews are how it got there
+    #[serde(default)]
+    #[ts(as = "Option<Vec<String>>", optional)]
+    pub previews: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -194,7 +203,7 @@ impl Kind {
     /// as brief.ts writes it, and as raea judge's rubrics are named
     pub fn name(self) -> &'static str {
         // in the enum's order
-        ["scene", "kit", "shot", "cut"][self as usize]
+        ["scene", "kit", "shot", "cut", "goal"][self as usize]
     }
 }
 
@@ -205,6 +214,7 @@ pub fn dials(kind: Kind) -> &'static [&'static str] {
         Kind::Kit => &["count", "variety", "detail", "wear", "wetness", "warmth", "look"],
         Kind::Shot => &["res", "seconds", "lens", "handheld", "look"],
         Kind::Cut => &["look"],
+        Kind::Goal => &[],
     }
 }
 
@@ -232,7 +242,14 @@ pub fn deliverables(m: &Make) -> Vec<String> {
         // a shot is a still or a move, so either file answers; apps/make reads `a|b`
         Kind::Shot => m.shots.iter().map(|s| format!("out/shots/{0}.png|out/shots/{0}.mp4", s.name)).collect(),
         Kind::Cut => m.cut.as_ref().map(crate::cut::deliverables).unwrap_or_default(),
+        // a goal's `file` rules
+        Kind::Goal => m.goal.iter().flat_map(|g| &g.rules).filter_map(|r| r.file.clone()).collect(),
     }
+}
+
+/// What the job shows but doesn't deliver: the plan's own list, else review/ and previews/.
+pub fn previews(m: &Make) -> Vec<String> {
+    if m.previews.is_empty() { vec!["review/".into(), "previews/".into()] } else { m.previews.clone() }
 }
 
 /// A name a file lands as: [a-z0-9_], not empty.
@@ -256,6 +273,12 @@ pub fn doctor(m: &Make) -> Vec<String> {
         (Some(c), Kind::Cut) => out.extend(crate::cut::doctor(c)),
         (None, Kind::Cut) => out.push("no `cut`: the brief as rules (count, cuts, say, never, cta, open), each quoting it".into()),
         (Some(_), k) => out.push(format!("`cut` is for a cut job, not a {k:?}: drop it, or make this `cut({{...}})`")),
+        _ => {}
+    }
+    match (&m.goal, m.kind) {
+        (Some(g), Kind::Goal) => out.extend(crate::goal::doctor(g)),
+        (None, Kind::Goal) => out.push("no `goal`: the goal in the person's words and its `rules`".into()),
+        (Some(_), k) => out.push(format!("`goal` is for a goal job, not a {k:?}: drop it, or make this `goal({{...}})`")),
         _ => {}
     }
     if m.kind == Kind::Kit && m.style.is_none() {

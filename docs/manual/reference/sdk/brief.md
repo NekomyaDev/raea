@@ -30,10 +30,10 @@ See [Workspaces and projects](../../concepts/workspaces.md) for where each spec 
 <!-- generated:begin by tools/manual-ref/sdk.ts from the SDK's exports and doc comments; edit outside this block -->
 
 ```ts
-import { brief, cut, fingerprint, kit } from "raea/brief"
+import { brief, cut, fingerprint, goal } from "raea/brief"
 ```
 
-`raea/brief` exports 9 functions, 40 types. Source: [sdk/raea/src/brief.ts](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/src/brief.ts).
+`raea/brief` exports 10 functions, 42 types. Source: [sdk/raea/src/brief.ts](https://github.com/shinyobjectz/raea/blob/main/sdk/raea/src/brief.ts).
 
 ## Functions
 
@@ -60,6 +60,16 @@ A fingerprint (fingerprint.ts): its axes and the encoders its heads were trained
 
 ```ts
 function fingerprint(f: Fingerprint): Fingerprint
+```
+
+### `goal`
+
+any other work held to a goal (`/goal`): the goal in the person's words and the rules that must hold before the agent
+stops, each a command that must pass (`run`), a file that must exist (`file`) or words a fresh critic judges
+(`says`, by `raea make judge`). `raea make status` holds the agent to every one.
+
+```ts
+function goal({ goal, rules, ...m }: MakeGoal & Omit<Make, "kind" | "goal">): Make
 ```
 
 ### `kit`
@@ -243,10 +253,22 @@ type MakeDial = MakeDialValue | { value: MakeDialValue, source?: MakeSource, /**
 type MakeDialValue = number | string
 ```
 
+### `MakeGoal`
+
+```ts
+type MakeGoal = { /** * the goal as the person said it */ goal: string, /** * what must hold before the agent may stop: every one, each checked in code or by a fresh critic */ rules?: Array<MakeGoalRule>, }
+```
+
+### `MakeGoalRule`
+
+```ts
+type MakeGoalRule = { /** * a short name: [a-z0-9_], how status, the critic and NOTES.md name it */ id: string, /** * a command that must exit 0, run in the brief's folder (`bun test`, `raea check edit.tsx`) */ run?: string, /** * the seconds `run` gets before it counts as failed (300 when left out) */ timeout?: num…
+```
+
 ### `MakeKind`
 
 ```ts
-type MakeKind = "scene" | "kit" | "shot" | "cut"
+type MakeKind = "scene" | "kit" | "shot" | "cut" | "goal"
 ```
 
 ### `MakeObject`

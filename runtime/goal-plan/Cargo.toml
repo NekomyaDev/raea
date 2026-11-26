@@ -1,0 +1,12 @@
+[package]
+name = "raea-runtime-goal-plan"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+publish = false
+description = "A goal job held to its rules: commands that must pass, and words a fresh critic must find true after the work's last change (make: goal({...}), /goal)"
+
+[dependencies]
+# the contract: `make: goal({...})` on brief.ts
+raea-core-brief = { path = "../../core/brief" }
+serde_json = "1"
