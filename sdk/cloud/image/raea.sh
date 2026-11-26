@@ -11,5 +11,7 @@ fi
 # agents reach for, so it's the same
 case "${1:-}" in
   words|transcribe) exec node /opt/raea-cloud/server/words.ts "$@" ;;
+  # faces cut by the frame or a seam, text too small (server/frames.ts, the farm's face detector)
+  frames) exec node /opt/raea-cloud/server/frames.ts "$@" ;;
 esac
 exec /opt/raea/bin/raea "$@"

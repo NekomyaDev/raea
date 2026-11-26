@@ -66,6 +66,14 @@ image = (
         "| tar -xJ -C /opt && ln -s /opt/blender-$v-linux-x64/blender /usr/local/bin/blender && blender -b --version | head -1",
     )
     .pip_install("fastapi[standard]==0.121.2")
+    # /v1/faces: OpenCV's YuNet face detector (232 KB, CPU), for the boxes' frames check (server/frames.ts): a box has
+    # no vision backend of its own (raea-perceive isn't in raea's Linux build), so a face cut by a 9:16 crop went unseen
+    .pip_install("opencv-python-headless==4.11.0.86", "numpy<2.3")
+    .run_commands(
+        "set -e; curl -fsSL -o /opt/yunet.onnx https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/"
+        "face_detection_yunet/face_detection_yunet_2023mar.onnx "
+        "&& echo '8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4  /opt/yunet.onnx' | sha256sum -c"
+    )
     .add_local_file(os.path.join(CLOUD, "image", "nvidia_icd.json"), "/usr/share/vulkan/icd.d/nvidia_icd.json", copy=True)
     .env({"WGPU_BACKEND": "vulkan", "NVIDIA_DRIVER_CAPABILITIES": "all", "RAEA_CLIP_CHECK": "0", "RAEA_AUDIO_MUTE": "1",
           "RAEA_MODELS": "/models/raea", "RAEA_FEED_MODELS": "/models/feed", "RAEA_LIBRARY_MODELS": "/models/library",
@@ -380,6 +388,49 @@ def api():
     # cloud's library index uses (apps/app host/library/words.ts) hears it here. The body is one MP3 piece (16 kHz mono,
     # at most 10 minutes; the box cuts the pieces), the answer its words in the piece's own seconds. 11-25, Shane: "give
     # it whatever we use for indexing and libraries and sync", so agents check the words their cuts say.
+    def seams(g):
+        """a split screen's seams: rows (h) or columns (v) where the picture jumps across nearly all of the frame, as a
+        cut between two pictures does and nothing filmed does (a caption's box spans part of it, a horizon is soft)"""
+        import numpy as np
+
+        found = []
+        for axis, d in (("h", np.abs(np.diff(g, axis=0))), ("v", np.abs(np.diff(g, axis=1)).T)):
+            n = d.shape[0]
+            share = (d > 24).mean(axis=1)
+            for i in range(int(n * 0.08), int(n * 0.92)):
+                if share[i] > 0.7 and share[i] >= share[max(i - 1, 0)] and share[i] >= share[min(i + 1, n - 1)]:
+                    found.append([axis, i + 1, round(float(share[i]), 2)])
+        return found
+
+    @web.post("/v1/faces")
+    async def faces(req: Request):
+        """the faces in a video's frames, for the boxes' frames check: the body is {"frames": [base64 JPEG, ...]} (at most
+        400, any size), the answer each frame's size and its faces as [x, y, w, h, score] in that frame's pixels"""
+        import base64
+        import cv2
+        import numpy as np
+
+        check(req)
+        body = await req.json()
+        frames = body.get("frames") if isinstance(body, dict) else None
+        if not isinstance(frames, list) or not frames:
+            raise HTTPException(400, 'the body is {"frames": [base64 JPEG, ...]}')
+        if len(frames) > 400:
+            raise HTTPException(413, "at most 400 frames a call")
+        out, det, size = [], None, None
+        for b64 in frames:
+            im = cv2.imdecode(np.frombuffer(base64.b64decode(b64), np.uint8), cv2.IMREAD_COLOR)
+            if im is None:
+                out.append(None)
+                continue
+            h, w = im.shape[:2]
+            if size != (w, h):
+                det, size = cv2.FaceDetectorYN.create("/opt/yunet.onnx", "", (w, h), 0.6, 0.3, 5000), (w, h)
+            _, found = det.detect(im)
+            out.append({"w": w, "h": h, "faces": [[round(float(f[0]), 1), round(float(f[1]), 1), round(float(f[2]), 1), round(float(f[3]), 1), round(float(f[14]), 3)] for f in (found if found is not None else [])],
+                        "seams": seams(cv2.cvtColor(im, cv2.COLOR_BGR2GRAY).astype(np.int16))})
+        return {"model": "yunet-2023mar", "frames": out}
+
     @web.post("/v1/words")
     async def words(req: Request):
         import base64

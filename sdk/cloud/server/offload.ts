@@ -87,6 +87,14 @@ export function plan(args: string[], cwd: string, root?: string): Plan | string 
 
 async function main() {
   const args = process.argv.slice(2)
+  // a video's render manifest (every text's size and place, frame by frame) beside it, for the frames check's text
+  // sizes (frames.ts), unless the render already asks for one
+  {
+    const oi = args.indexOf("-o")
+    const o = oi >= 0 ? (args[oi + 1] ?? "") : ""
+    if (args[0] === "render" && /\.(mp4|mov|m4v|webm)$/i.test(o) && !args.includes("--manifest") && process.env.RAEA_CLOUD_FRAMES !== "0")
+      args.push("--manifest", `${o.slice(0, o.length - path.extname(o).length)}.render.json`)
+  }
   const url = process.env.RAEA_CLOUD_GPU_URL
   const token = process.env.RAEA_CLOUD_GPU_TOKEN ?? ""
   if (!url) local(args)
@@ -183,6 +191,18 @@ async function main() {
       const { afterRender } = await import("./words.ts")
       const code = await afterRender(made, say)
       if (code) process.exitCode = code
+    }
+    // what its pictures get wrong (frames.ts): faces cut by the frame or a split screen's seam, text too small to read
+    // (11-25, Shane: "it cuts out faces all the time", "it makes text too small")
+    if (!exit && /\.(mp4|mov|m4v|webm)$/i.test(made) && existsSync(made) && process.env.RAEA_CLOUD_FRAMES !== "0") {
+      const { main: frames } = await import("./frames.ts")
+      say(`the frames check: ${path.basename(made)}'s faces and text sizes`)
+      const mi = args.indexOf("--manifest")
+      const code = await frames(["check", made, ...(mi >= 0 ? ["--manifest", path.resolve(process.cwd(), args[mi + 1] ?? "")] : [])]).catch((e) => (say(`the frames check couldn't run: ${(e as Error).message}`), 0))
+      if (code) {
+        say(`${path.basename(made)} has a face cut or text too small: fix every ERROR above (reframe on the person, make the text bigger), then render again. A face at the edge that's meant goes in ${path.basename(made, path.extname(made))}.despite.txt with why`)
+        process.exitCode = code
+      }
     }
   } finally {
     rmSync(tmp, { recursive: true, force: true })

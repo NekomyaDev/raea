@@ -7,6 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { parseSummary, pick } from "../server/gpu.ts"
+import { cutFaces, smallText, splitsOf } from "../server/frames.ts"
 import { plan, projectRoot } from "../server/offload.ts"
 import { shellEnv } from "../server/shell-os.ts"
 import { landedQuery, linkIn, packCredential, unpackCredential } from "../server/google-token.ts"
@@ -105,4 +106,32 @@ console.log("units: ok")
   rmSync(home, { recursive: true, force: true })
   rmSync(other, { recursive: true, force: true })
   console.log("ok google-token")
+}
+
+{
+  // frames.ts: a face at the frame's edge for a second is an error, for half a second a warning; a face too small to be
+  // someone in the shot is left alone
+  const fr = (faces: number[][], seams: [string, number, number][] = []) => ({ w: 540, h: 960, faces, seams })
+  const edge = [0, 400, 40, 90, 0.9]
+  const whole = [200, 300, 80, 100, 0.9]
+  let f = cutFaces([fr([whole]), fr([edge]), fr([edge]), fr([whole]), fr([edge]), fr([[0, 50, 10, 12, 0.9]])])
+  assert.deepEqual(f.map((x) => [x.level, x.at, x.until]), [["error", 0.5, 1.5], ["warn", 2, 2.5]])
+  assert.match(f[0].says, /left edge/)
+  // a split screen: a lone line held; a caption's box (two lines close together) isn't one
+  assert.deepEqual(splitsOf(fr([], [["h", 480, 0.8]])), [{ axis: "h", at: 480 }])
+  assert.deepEqual(splitsOf(fr([], [["h", 446, 0.8], ["h", 513, 0.8]])), [])
+  assert.deepEqual(splitsOf(fr([], [["h", 60, 0.9]])), [], "near the edge: a letterbox or a header")
+  const seam: [string, number, number][] = [["h", 480, 0.8]]
+  f = cutFaces([fr([[200, 430, 80, 50, 0.9]], seam), fr([[200, 430, 80, 50, 0.9]], seam), fr([[200, 430, 80, 50, 0.9]], seam)])
+  assert.ok(f.some((x) => x.kind === "face-cut" && /seam/.test(x.says) && x.level === "error"))
+  f = cutFaces([fr([[200, 200, 80, 100, 0.9]], seam), fr([[200, 200, 80, 100, 0.9]], seam), fr([[200, 200, 80, 100, 0.9]], seam)])
+  assert.deepEqual(f.map((x) => x.kind), ["split"], "one face over a split: a split for nothing")
+  f = cutFaces([0, 1, 2].map(() => fr([[200, 200, 80, 100, 0.9], [200, 650, 80, 100, 0.9]], seam)))
+  assert.deepEqual(f, [], "two people, one each side")
+  // text sizes in pixels of a 1080-wide frame: a 720-wide render's 28 px is 42 px
+  const m = (w: number, size: number) => ({ width: w, height: (w * 16) / 9, fps: 30, frames: [{ frame: 0, text: [{ text: "Not for surgeries", size, opacity: 1 }] }] })
+  assert.equal(smallText(m(1080, 28))[0].level, "error")
+  assert.equal(smallText(m(720, 28))[0].level, "warn")
+  assert.deepEqual(smallText(m(1080, 64)), [])
+  console.log("ok frames")
 }
