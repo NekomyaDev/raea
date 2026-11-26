@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+appdir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+export PATH="$appdir/usr/bin:$PATH"
+export LD_LIBRARY_PATH="$appdir/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export RAEA_HOME="$appdir/usr/share/raea"
+export RAEA_BUNDLE_LIB="$appdir/usr/bin/libraea_bundle.so"
+export RAEA_NO_TREE=1
+# Preserve the caller's working directory: composition and output paths are relative to it.
+exec "$appdir/usr/bin/raea" "$@"

@@ -2,6 +2,7 @@
 # Apple Silicon, Linux on x86_64 and Windows on x86_64 are built from the tag on GitHub's runners, packed by
 # tools/release.sh, checked by tools/release-check.sh, attested (anyone can check a download with
 # `gh attestation verify raea-VERSION-macos-arm64.tar.gz -R shinyobjectz/raea`) and attached to the tag's release.
+# Linux also packages and checks an AppImage from the same verified archive (tools/release-appimage.sh).
 # The skills gate reads the feed app, which is private, so it runs in a maintainer's checkout first
 # (tools/skills.sh check), and the tag names the commit it passed on; tools/release.sh checks the gate's inputs haven't
 # changed since (tools/release/skills-passed.sh):
@@ -181,6 +182,11 @@ jobs:
           v=${TAG#v}
           if [ "$RUNNER_OS" = Linux ]; then xvfb-run -a -s "-screen 0 1280x1024x24" bash tools/release.sh "$v" ship HEAD
           else bash tools/release.sh "$v" ship HEAD; fi
+      - name: Package and check the Linux AppImage
+        if: runner.os == 'Linux'
+        env:
+          RAEA_CHECK_DIR: ${{ runner.temp }}/appimage-check
+        run: xvfb-run -a -s "-screen 0 1280x1024x24" bash tools/release-appimage.sh "${TAG#v}" "dist/raea-${TAG#v}-linux-x86_64.tar.gz"
       # a failed check's own files (the app check's frames, every step's log), not the unpacked release
       - uses: actions/upload-artifact@v4
         if: failure()
@@ -189,6 +195,8 @@ jobs:
           path: |
             ${{ runner.temp }}/release-check/app
             ${{ runner.temp }}/release-check/**/*.log
+            ${{ runner.temp }}/appimage-check/app
+            ${{ runner.temp }}/appimage-check/**/*.log
           retention-days: 7
           if-no-files-found: ignore
       # the stripped binaries' symbols (#88), for symbolicating a crash report from this release; never published
@@ -202,6 +210,10 @@ jobs:
         if: ${{ !inputs.dry_run }}
         with:
           subject-path: dist/raea-*.tar.gz
+      - uses: actions/attest-build-provenance@v2
+        if: ${{ runner.os == 'Linux' && !inputs.dry_run }}
+        with:
+          subject-path: dist/raea-*.AppImage
       - name: Attach to the release
         if: ${{ !inputs.dry_run }}
         env:
@@ -209,11 +221,16 @@ jobs:
         run: |
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" ${{ contains(env.TAG, '-') && '--prerelease' || '' }} --title "raea ${TAG#v}" --notes "Built by .github/workflows/release.yml; notes follow."
           gh release upload "$TAG" dist/raea-*.tar.gz dist/raea-*.tar.gz.sha256 --clobber
+          if [ "$RUNNER_OS" = Linux ]; then
+            gh release upload "$TAG" dist/raea-*.AppImage dist/raea-*.AppImage.sha256 --clobber
+          fi
       - uses: actions/upload-artifact@v4
         if: ${{ inputs.dry_run }}
         with:
           name: dry-run-${{ runner.os }}
-          path: dist/raea-*.tar.gz*
+          path: |
+            dist/raea-*.tar.gz*
+            dist/raea-*.AppImage*
           retention-days: 3
           compression-level: 0
 

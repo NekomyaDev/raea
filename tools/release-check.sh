@@ -6,13 +6,25 @@
 # key, and a Windows archive holds no Microsoft file (the CRT comes from the VC++ redistributable;
 # docs/handoff/ports.md).
 #
-#   tools/release-check.sh ARCHIVE     raea-VERSION-PLATFORM.tar.gz or .zip
+#   tools/release-check.sh ARCHIVE     raea-VERSION-PLATFORM.tar.gz, .zip or .AppImage
 set -eu
 archive=${1:?usage: release-check.sh ARCHIVE}
 # RAEA_CHECK_DIR keeps the check's folder where a CI job can upload it when a check fails (release.yml)
 check=${RAEA_CHECK_DIR:-$(mktemp -d)}
 mkdir -p "$check"
+check=$(cd "$check" && pwd)
 case $archive in
+  *.AppImage)
+    archive=$(cd "$(dirname "$archive")" && pwd)/$(basename "$archive")
+    (cd "$check" && "$archive" --appimage-extract >/dev/null)
+    ln -s "$check/squashfs-root/usr" "$check/raea"
+    # Every command goes through AppRun's environment, as a mounted image would.
+    cat > "$check/appimage-raea" <<'SH'
+#!/bin/sh
+exec "$(dirname "$0")/squashfs-root/AppRun" "$@"
+SH
+    chmod +x "$check/appimage-raea"
+    ;;
   *.zip) if command -v unzip >/dev/null; then unzip -q "$archive" -d "$check"; else 7z x -y -o"$check" "$archive" >/dev/null; fi ;;
   *) tar -xzf "$archive" -C "$check" ;;
 esac
@@ -20,6 +32,7 @@ fail() { echo "release: $* (see $check)" >&2; exit 1; }
 raea=$check/raea/bin/raea
 [ -f "$raea.exe" ] && raea=$raea.exe
 [ -f "$raea" ] || fail "no raea in bin/"
+[ ! -f "$check/appimage-raea" ] || raea=$check/appimage-raea
 # the edit in a folder of its own: raea reads every file under a project, and the install isn't the user's project
 mkdir -p "$check/p"
 cat > "$check/p/hello.tsx" <<'TSX'
