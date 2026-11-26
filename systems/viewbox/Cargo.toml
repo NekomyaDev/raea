@@ -7,5 +7,6 @@ publish = false
 description = "The view a camera on the Engine's target draws: the frame above its tag row, or the box a page lays out for it (Engine::set_view_box, #130)"
 
 [dependencies]
+raea-sys-compose = { path = "../compose" }
 raea-sys-frame = { path = "../frame" }
 bevy = { version = "=0.20.0", default-features = false, features = ["std", "default_app", "3d_bevy_render"] }

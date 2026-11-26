@@ -304,7 +304,7 @@ fn queue(views: Query<(&ViewTarget, &FramePasses)>, pipelines: Option<ResMut<Pip
     }
 }
 
-type Views<'w, 's> = ViewQuery<'w, 's, (&'static ViewTarget, &'static FramePasses, &'static ExtractedView, Option<&'static ViewPrepassTextures>, Option<&'static ExtractedCamera>, Option<&'static bevy::camera::MainPassResolutionOverride>, Option<&'static raea_sys_viewbox::Overscan>)>;
+type Views<'w, 's> = ViewQuery<'w, 's, (&'static ViewTarget, &'static FramePasses, &'static ExtractedView, Option<&'static ViewPrepassTextures>, Option<&'static ExtractedCamera>, Option<&'static bevy::camera::MainPassResolutionOverride>, Option<&'static raea_sys_compose::passes::Overscan>)>;
 
 /// The camera's Viewport in its target (x, y, w, h in px), and its size and corner over the target's (the uniforms'
 /// `view`); none without a Viewport, the pass then spanning the target.
@@ -340,7 +340,7 @@ fn draw<const BEFORE: bool>(view: Views<'_, '_>, p: Option<Res<Pipelines>>, cach
     let near = extracted.clip_from_view.w_axis.z;
     let port = viewport(camera);
     let view_uv = port.map_or(Vec4::new(1.0, 1.0, 0.0, 0.0), |p| p.1);
-    let deep = deep(part.map(|p| p.0), camera.and_then(|c| c.physical_viewport_size), raea_sys_viewbox::Overscan::drawn(over));
+    let deep = deep(part.map(|p| p.0), camera.and_then(|c| c.physical_viewport_size), raea_sys_compose::passes::Overscan::drawn(over));
     for pass in passes.0.iter().filter(|x| x.at == at) {
         if let Some(w) = &pass.written {
             let Some((layout, id)) = p.written.get(&(pass.shader, target.main_texture_format())) else { continue };

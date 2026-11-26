@@ -66,6 +66,30 @@ struct PassView(u32);
 #[derive(Component, Clone, Copy, Default)]
 pub struct PrepassRead;
 
+/// Overscan: a camera's main pass draws `margin` of its view more on every side (0.05: a twentieth of the width left and
+/// right, of the height top and bottom), and what draws it crops the middle back out, so the light a traced view
+/// gathers from its neighbours and from the frames before has something to gather at the frame's border
+/// (docs/raytracing.feature RT40). Put on a camera by what does the cropping (raea-render-raytrace's denoiser), never
+/// by a composition.
+#[derive(Component, Clone, Copy, PartialEq, Debug, Default)]
+pub struct Overscan {
+    pub margin: f32,
+    /// the margin the camera's view was last widened by (raea-sys-viewbox's tag_row_view sets it): what is cropped back
+    pub drawn: f32,
+}
+
+impl Overscan {
+    /// The margin as it applies: none without the component, at most a quarter.
+    pub fn of(o: Option<&Overscan>) -> f32 {
+        o.map_or(0.0, |o| if o.margin.is_finite() { o.margin.clamp(0.0, 0.25) } else { 0.0 })
+    }
+
+    /// The margin the camera's view is drawn wider by: none until tag_row_view has widened it.
+    pub fn drawn(o: Option<&Overscan>) -> f32 {
+        o.map_or(0.0, |o| o.drawn)
+    }
+}
+
 pub fn install(app: &mut App) {
     let Some(pass) = wanted() else { return };
     bevy::asset::embedded_asset!(app, "passes.wesl");
