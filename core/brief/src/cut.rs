@@ -93,6 +93,10 @@ pub struct Phrase {
 pub struct Cta {
     pub text: String,
     pub from: String,
+    /// the other lines a brief rotates (two host lines, a paid take's): any one lands it, each found in the brief
+    #[serde(default)]
+    #[ts(as = "Option<Vec<String>>", optional)]
+    pub also: Vec<String>,
     /// how near the end it must land, in seconds (8 when left out)
     pub within: Option<f64>,
 }
@@ -151,6 +155,9 @@ pub fn quotes(c: &Cut) -> Vec<(String, &str)> {
     }
     if let Some(cta) = &c.cta {
         q.push(("cta".into(), &cta.from));
+        for line in &cta.also {
+            q.push((format!("cta \"{line}\""), line));
+        }
     }
     for o in &c.open {
         q.push((format!("open \"{}\"", o.question), &o.from));

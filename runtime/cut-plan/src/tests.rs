@@ -180,3 +180,20 @@ fn heard_the_way_people_say_it() {
     deliver(&d, S1, &line.replace("It's free it's fun", "It's fun it's free"), &[]);
     assert!(!of(&run(&m, &d), "say", S1).clear);
 }
+
+#[test]
+fn a_rotated_cta_lands_on_any_of_its_lines() {
+    // Dutch's hosts rotate "See a vet today at Dutch.com." and "Download the Dutch app and book a call for your dog or cat."
+    let brief = format!("{BRIEF}\"See a vet today at Dutch.com.\"\n");
+    let d = dir("rotated");
+    put(&d, "media/brief.txt", brief.as_bytes());
+    let mut m = contract("");
+    m.cut.as_mut().unwrap().cta.as_mut().unwrap().also = vec!["See a vet today at Dutch.com.".into()];
+    deliver(&d, S1, "it draws the names it's free fun and easy so See a vet today at Dutch com", &[]);
+    let g = run(&m, &d);
+    assert!(of(&g, "cta", S1).clear, "{:?}", of(&g, "cta", S1));
+    assert!(named(&g, "quotes")[0].clear, "{:?}", named(&g, "quotes"));
+    // a rotated line the brief doesn't have is held like any other rule
+    m.cut.as_mut().unwrap().cta.as_mut().unwrap().also.push("Book now at Dutch.com".into());
+    assert!(!named(&run(&m, &d), "quotes")[0].clear);
+}

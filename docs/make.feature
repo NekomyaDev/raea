@@ -260,7 +260,8 @@ Feature: Make: scenes, kits and shots built to a frozen plan and held to a revie
       Then core/brief reads `cut` (cut.rs): `brief` (that text), `count` (how many cuts the brief asks for), `seconds`
         and `formats`, each cut (id, angle, solo or mashup, hook, captions or a text hook, its own formats and length),
         `say` (phrases every cut says or shows, or one cut with `every: false`), `never` (phrases no cut says or
-        shows), `cta` (the line every cut ends on, within its last 8 s) and `open` (the brief's [TO CONFIRM] items)
+        shows), `cta` (the line every cut ends on, within its last 8 s; `also`: the other lines a brief rotates, any
+        one of which lands it, each found in the brief) and `open` (the brief's [TO CONFIRM] items)
       And every rule has `from`: the brief's own words for it
       And each cut lands at a fixed path, out/cuts/<id>_<W>x<H>.mp4 for each of its formats
       And `doctor` names what the contract still lacks: no count, no cta, an id that isn't [a-z0-9_], a format that

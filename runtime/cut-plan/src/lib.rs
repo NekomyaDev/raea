@@ -183,17 +183,24 @@ fn file_gates(c: &Cut, plan: &cut::CutPlan, format: &str, f: &Path, rel: &str, s
             if let Some(cta) = &c.cta {
                 let within = cta.within.unwrap_or(cut::CTA_WITHIN);
                 let end = shape.map(|s| s.2).or_else(|| words.last().map(|w| w.2)).unwrap_or(0.0);
-                let want_s = norm(&cta.text);
-                let want: Vec<&str> = want_s.split(' ').collect();
-                let share = |got: &[&str]| {
+                let last: Vec<&str> = words.iter().filter(|w| w.2 >= end - within).map(|w| w.0.as_str()).collect();
+                // the share of a line's words, in order, in `got`; the best of the brief's lines
+                let share = |line: &str, got: &[&str]| {
+                    let want_s = norm(line);
+                    let want: Vec<&str> = want_s.split(' ').collect();
                     let j = joined(got, &want);
                     in_order(&want, &j.iter().map(|(w, _)| w.as_str()).collect::<Vec<_>>())
                 };
-                let last: Vec<&str> = words.iter().filter(|w| w.2 >= end - within).map(|w| w.0.as_str()).collect();
-                let heard_share = share(&last);
-                let on_screen = screen.iter().any(|(s, at)| *at >= end - within && share(&s.split(' ').collect::<Vec<_>>()) >= CTA_SHARE);
+                let lines: Vec<&str> = std::iter::once(cta.text.as_str()).chain(cta.also.iter().map(String::as_str)).collect();
+                let (best, heard_share) = lines.iter().map(|l| (*l, share(l, &last))).fold(("", 0.0), |a, b| if b.1 > a.1 { b } else { a });
+                let on_screen = screen.iter().any(|(s, at)| *at >= end - within && lines.iter().any(|l| share(l, &s.split(' ').collect::<Vec<_>>()) >= CTA_SHARE));
                 let ok = heard_share >= CTA_SHARE || on_screen;
-                out.push(gate("cta", Some(rel), ok, if ok { format!("ends on the CTA ({})", if on_screen { "on screen" } else { "heard" }) } else { format!("the CTA isn't in its last {within:.0} s ({:.0}% of its words heard there): \"{}\"", heard_share * 100.0, cta.text) }));
+                let says = match (ok, on_screen) {
+                    (true, true) => "ends on the CTA (on screen)".to_string(),
+                    (true, false) => format!("ends on the CTA (heard: \"{best}\")"),
+                    _ => format!("no CTA in its last {within:.0} s ({:.0}% of the nearest one's words heard there): \"{}\"", heard_share * 100.0, if best.is_empty() { &cta.text } else { best }),
+                };
+                out.push(gate("cta", Some(rel), ok, says));
             }
         }
     }

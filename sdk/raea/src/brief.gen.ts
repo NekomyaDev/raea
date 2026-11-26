@@ -408,6 +408,10 @@ every?: boolean, };
 
 export type MakeCta = { text: string, from: string, 
 /**
+ * the other lines a brief rotates (two host lines, a paid take's): any one lands it, each found in the brief
+ */
+also?: Array<string>, 
+/**
  * how near the end it must land, in seconds (8 when left out)
  */
 within?: number, };
