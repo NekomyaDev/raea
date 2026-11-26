@@ -12,11 +12,15 @@
 #                                      (POST /v1/admin/boxes; its health must answer). A box below it takes over
 #                                      by itself when it stops answering, so a box is never swapped by editing secrets
 #   deploy/sprites/box.sh list         raea cloud's boxes in order, each one's health and build
+#   deploy/sprites/box.sh latest [VERSION]  every box in raea cloud's list onto a release (the newest when none is
+#                                      named), once its release run has attached the Linux archive: raea and
+#                                      sdk/cloud's server both from that release's commit, each box after its running
+#                                      agents finish. tools/agents/release-go.sh runs it after every release it publishes
 #   deploy/sprites/box.sh key NAME     a raea agent key (repos and storage scopes) from stdin, or the clipboard, onto
 #                                      the box as RAEA_AGENT_KEY: its agents clone raea projects (raea-repo clone OWNER
 #                                      PROJECT DIR, deploy/git/repo.sh), push, and send renders' media by hash (CR22, CR23)
 #
-# RAEA_VERSION (0.1.9) and AGENTS ("kimi-code claude-acp") pick what goes on, and RAEA_CLOUD_REF takes sdk/cloud from
+# RAEA_VERSION (the newest release when unset) and AGENTS ("kimi-code claude-acp") pick what goes on, and RAEA_CLOUD_REF takes sdk/cloud from
 # raea's public repo at that commit instead of this working tree; the farm comes from
 # ~/.config/raea-cloud/farm.env (RAEA_CLOUD_GPU_URL, RAEA_CLOUD_GPU_TOKEN). The Sprite's URL stays private to the org.
 # Game kits need ~/.config/raea-cloud/games/raea-games-linux-x86_64.tgz (raea-decompose and unity-rs built for Linux,
@@ -26,8 +30,12 @@ set -euo pipefail
 # the org raea owns, never another business's (org.sh)
 . "$(dirname "$0")/org.sh"
 NAME=${2:-}
-[ -n "$NAME" ] || [ "${1:-}" = list ] || { echo "box: name the Sprite"; exit 2; }
-RAEA_VERSION=${RAEA_VERSION:-0.1.9}
+[ -n "$NAME" ] || [ "${1:-}" = list ] || [ "${1:-}" = latest ] || { echo "box: name the Sprite"; exit 2; }
+REPO=shinyobjectz/raea
+# the newest published release (never an rc): what a box gets unless RAEA_VERSION names one
+newest() { gh release view -R "$REPO" --json tagName -q .tagName 2>/dev/null | sed 's/^v//'; }
+if [ -z "${RAEA_VERSION:-}" ] && [ "${1:-}" != latest ]; then RAEA_VERSION=$(newest); fi
+[ -n "${RAEA_VERSION:-}" ] || [ "${1:-}" = latest ] || { echo "box: couldn't read raea's newest release (gh signed in?); set RAEA_VERSION"; exit 2; }
 AGENTS=${AGENTS:-kimi-code claude-acp antigravity-acp}
 HERE=$(cd "$(dirname "$0")/../.." && pwd)
 FARM=${RAEA_FARM_ENV:-$HOME/.config/raea-cloud/farm.env}
@@ -100,6 +108,44 @@ status)
   x "/opt/raea/bin/raea --version; . ~/.raea-cloud.env; curl -fsS -H \"authorization: Bearer \$RAEA_CLOUD_TOKEN\" localhost:8080/v1/health | head -c 600; echo"
   ;;
 token) x ". ~/.raea-cloud.env; echo \$RAEA_CLOUD_TOKEN" ;;
+latest)
+  # Shane, 11-26: "make sure that release pipeline automatically updates boxes for raea cloud to the latest"
+  version=${2:-$(newest)}
+  [ -n "$version" ] || { echo "box: couldn't read raea's newest release (gh signed in?)"; exit 2; }
+  tag=v$version
+  linux=raea-$version-linux-x86_64.tar.gz
+  attached() { gh release view "$tag" -R "$REPO" --json assets -q '.assets[].name' 2>/dev/null | grep -qx "$linux"; }
+  # a box takes raea's Linux archive, which the tag's release.yml run attaches: that run is waited on to its end
+  if ! attached; then
+    # the run registers a few seconds after the tag is pushed (two minutes at most)
+    id=""
+    for _ in $(seq 1 24); do
+      id=$(gh run list -R "$REPO" -w release.yml -b "$tag" --json databaseId -q '.[0].databaseId' 2>/dev/null)
+      [ -n "$id" ] && break
+      sleep 5
+    done
+    [ -n "$id" ] || { echo "box: no release.yml run for $tag: no box changed"; exit 1; }
+    echo "box: waiting for $tag's release run ($id) to attach the Linux archive"
+    gh run watch "$id" -R "$REPO" --exit-status > /dev/null 2>&1 || attached || { echo "box: $tag's release run failed before its Linux archive: no box changed"; exit 1; }
+    attached || { echo "box: $tag's release run ended without $linux: no box changed"; exit 1; }
+  fi
+  # sdk/cloud's server from the release's own commit in the public repo, as a bot's box takes it
+  ref=$(gh api "repos/$REPO/commits/$tag" -q .sha) || { echo "box: couldn't read $tag's commit"; exit 1; }
+  names=$("$0" list | sed 's/^[* ] *//' | awk '{print $1}' | grep -v '^$') || { echo "box: couldn't list raea cloud's boxes"; exit 1; }
+  [ -n "$names" ] || { echo "box: raea cloud lists no boxes"; exit 1; }
+  failed=""
+  for b in $names; do
+    # a Sprite that's gone or whose disk died (raea-1, 11-25) is reported and passed over; the others still go
+    echo "box: $b onto raea $version (${ref:0:10})"
+    # RAEA_BOX_DRY=1: what it would do, and nothing done
+    [ "${RAEA_BOX_DRY:-}" = 1 ] && continue
+    RAEA_VERSION=$version RAEA_CLOUD_REF=$ref "$0" up "$b" || failed+=" $b"
+  done
+  "$0" list
+  [ "${RAEA_BOX_DRY:-}" = 1 ] && { echo "box: dry run: no box changed"; exit 0; }
+  [ -z "$failed" ] || { echo "box: not on $version:$failed"; exit 1; }
+  echo "box: every box is on raea $version"
+  ;;
 promote | list)
   # raea cloud's staff key: RAEA_CLOUD_ADMIN_KEY, else the Mac's keychain (raea-cloud-prod-staff-key)
   api=${RAEA_CLOUD_API:-https://api.raea.cloud}
