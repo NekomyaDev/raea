@@ -16,6 +16,7 @@ const db = Array.from({ length: 200 }, (_, i) => (i >= 40 && i < 70 ? -40 : -20)
 const hw = [w("So", 0.1, 0.3), w("hurt", 0.35, 0.8), w("his", 0.8, 1.2), w("paw", 1.2, 1.9)]
 ok(fades(db, hw, 2).some((x) => x.kind === "faded"), "a crossfade dip inside a word is found")
 ok(!fades(Array(200).fill(-20), hw, 2).some((x) => x.kind === "faded"), "even speech has no dip")
+ok(!fades(Array.from({ length: 200 }, (_, i) => (i >= 60 && i < 80 ? -40 : -20)), hw, 2).some((x) => x.kind === "faded"), "a word trailing off to its end is not a fade")
 ok(fades(Array(200).fill(-20), [w("Hi", 0.0, 0.3), ...hw.slice(1)], 2).some((x) => x.kind === "edge"), "a word on the first frame is flagged when the sound is loud there")
 ok(!fades([-60, -60, -60, ...Array(197).fill(-20)], [w("Hi", 0.0, 0.3), ...hw.slice(1)], 2).some((x) => x.kind === "edge"), "Whisper putting a word at 0 over silence is not")
 ok(split([w("for $60", 1, 2)]).map((x) => x.text).join("|") === "for|$60", "two words handed back as one are split")

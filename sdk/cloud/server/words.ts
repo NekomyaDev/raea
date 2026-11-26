@@ -113,13 +113,22 @@ export function fades(db: number[], heard: Word[], seconds: number): Finding[] {
     const w = heard[n]
     const a = Math.floor(w.start * 100)
     const b = Math.min(db.length, Math.ceil(w.end * 100))
+    // a dip that comes back up inside the word: a fade out and in across a join. One that runs on to the word's end is
+    // the word trailing off (Whisper's spans take in the quiet after a word), not a fade
     let run = 0
+    let deepest = 0
     for (let f = a; f < b; f++) {
-      run = quiet(f) ? run + 1 : 0
-      if (run === 12 && f / 100 - lastAt > 1) {
-        lastAt = f / 100
-        out.push({ level: "warn", kind: "faded", at: (f - 11) / 100, says: `"${w.text}" at ${w.start.toFixed(2)} s dips ${(median - db[f]).toFixed(0)} dB under the speech for ${run * 10}+ ms: a crossfade or fade over speech? Dialogue joins are hard cuts in the gap between words, with fades of 20 ms at most` })
+      if (quiet(f)) {
+        run++
+        deepest = Math.max(deepest, median - db[f])
+        continue
       }
+      if (run >= 12 && db[f] > median - 8 && f / 100 - lastAt > 1) {
+        lastAt = f / 100
+        out.push({ level: "warn", kind: "faded", at: (f - run) / 100, says: `"${w.text}" at ${w.start.toFixed(2)} s dips ${deepest.toFixed(0)} dB under the speech for ${run * 10} ms and comes back: a crossfade or fade over speech? Dialogue joins are hard cuts in the gap between words, with fades of 20 ms at most` })
+      }
+      run = 0
+      deepest = 0
     }
   }
   const first = heard[0]
