@@ -106,6 +106,12 @@ export interface SolariLightingProps {
    * frame, so it casts traced shadows and bounces light. Decided as each mesh is first traced, so set it from the first
    * frame. (A hidden part, or one a frame leaves out, leaves the traced scene with or without it.) */
   dynamic?: boolean;
+  /** overscan (off by default): the view is traced this much wider on every side (0.05 is a twentieth of its width and
+   * height) and the middle cropped back out, so the frame's border has light to gather from as the camera moves. For
+   * a moving shot whose edges crawl (`raea light steady` passing everywhere but the border). It costs (1 + 2 x
+   * overscan)² the tracing, the picture is drawn at 1 / (1 + 2 x overscan) of its size at most and brought up, and
+   * depth of field, motion blur and `--aov` read the wider view. Mac only (it rides MetalFX's denoiser) */
+  overscan?: number;
   /** constants in Solari's and the denoiser's shaders, compiled in when the scene loads (a value changed later in the
    * composition isn't drawn); each left out keeps the shader's own, given in brackets. <ShaderConstants> reaches the
    * rest */
@@ -231,6 +237,7 @@ export function solariSettings(p: SolariLightingProps): Record<string, unknown> 
   if (p.emissiveSharpness !== undefined) v.emissive_sharpness = p.emissiveSharpness;
   if (p.jitterFrames !== undefined) v.jitter_frames = p.jitterFrames;
   if (p.dynamic !== undefined) v.dynamic = p.dynamic;
+  if (p.overscan !== undefined) v.overscan = p.overscan;
   return Object.keys(v).length ? v : undefined;
 }
 

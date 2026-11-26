@@ -88,12 +88,26 @@ jitter, or a cache sized to the take. So the live steady history is tried first:
 the cells the camera sees (they are read each frame, so never die) with no file and no capacity limit. It costs a lag
 on light that moves, as long as the history: t8's power cut needs a short `frames`, as it has today.
 
-## The cache's level drifts with time and resolution (11-25)
+## The cache's level does not drift: a pass's uniforms stood still (11-25)
 
-The same t2 frame (1188), median scene luminance: a cold single frame at 1440 x 1080 reads 0.0189 and at 160 x 240
-(the meter) 0.0177. Inside the long renders, the view reads 0.130 (7x) and the meter 0.0034 (0.2x). So the cache's
-long-run level depends on how many pixels feed it, and the camcorder's auto-exposure, metered at 160 x 240, set the
-final 14-40x too bright: Shane's overexposed daylight. The path tracer at t2's hold frame (t2-pt) says which is right.
+An earlier reading here was wrong. The same t2 frame (1188) read 0.0189 cold at 1440 x 1080 and 0.0177 at 160 x 240,
+but 7x that inside the long view render and 0.2x inside the long meter render, and it looked as if the world cache's
+level depended on time and on how many pixels fed it. It doesn't. With the tape's exposure held constant, a 520-frame
+moving run and a held frame agree (ratio 1.04), at any size.
+
+What moved was the passes over the frame. A video's 3D is made live, and when a part is dropped mid-render the live
+rows move up; a <FramePass>'s and a <Compute>'s `follow` found their row by the order the scene opened with, so from
+the first drop on they read another row and kept the uniforms they opened with. The view's exposure stayed at its
+first value (64 against 7.6 at t2's frame 720), the meter's passes kept their first camera, and the auto-exposure
+built on that meter set the final 14 to 40x too bright: Shane's overexposed daylight. Fixed in the engine
+(engine/render spawn.rs `name_rows`; docs/shaders.feature SH6). After it, t2's meter reads 3 to 4.6x higher than
+before, a held meter frame and the moving one agree (0.89), and the take's white share fell from a median of 19.9%
+to 3.7%.
+
+How it was found, for the next time a sequence and a still disagree: hold the frame (`raea render --hold N:40`) and
+compare it with frame N of the sequence; then make one input constant at a time (here the exposure uniform) until
+they agree. The frame-purity check (`raea render`, every 300th frame drawn again alone) catches this class, and
+MALL RAT renders with it off (RAEA_FRAME_PURE=0), because Solari's history makes a still differ from a sequence anyway.
 
 ## What fixes the patches, measured (11-25)
 
@@ -249,8 +263,15 @@ With the firefly filter at 6 on every take, 19 of 24 holds read STEADY (8 of 22 
   (`constants={{ emissiveClamp: { stillHold: 0.25 } }}`); the fix for every scene is a count, kept with the history,
   of the frames a pixel was missed. A softer gather kernel made it worse (11 to 13% at emissiveSharpness 3 and 1.5).
 - **The border** (above): t3 1320's wall at the frame's right edge is lit in 8 px blocks that change each frame, and
-  the corner squares of t5 900 and the court boil past the worst-square limit on some runs. Overscan is
-  docs/raytracing.feature RT40, designed and not built.
+  the corner squares of t5 900 and the court boil past the worst-square limit on some runs. Overscan
+  (docs/raytracing.feature RT40) is built, off by default: `<SolariLighting overscan={k}>` (RAEA_SOLARI_OVERSCAN) widens
+  the camera's sub view by k a side (raea-sys-viewbox), the main pass draws that at 1 / (1 + 2k) of the view's size at
+  most, MetalFX's denoiser brings it up to a texture (1 + 2k) the view's size, the emission goes back in there, and the
+  middle is copied over the colour; FramePass's depth() and normal() read the middle of the wider prepass (and now read
+  the right texels under a render scale below 1, which they didn't). Measured 11-25: lightbench's window draws the
+  same picture with and without it (no shift, no zoom, mean difference 0.006). t3 1320 held: jitter's worst square
+  16.06% without, 5.61% at 0.05 and 6.07% at 0.08 (limit 5), boiling's worst 2.32%, 3.51% and 6.1%. So it takes most
+  of the border's share away and no margin clears this hold: what's left in the last two columns isn't the border.
 - A hold near the limit passes on one run and fails on the next (t2 922 and t2 2304 failed in the baseline and read
   STEADY minutes later): what's left there is chance, a firefly landing in the 75 frames or not.
 

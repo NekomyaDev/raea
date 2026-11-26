@@ -15069,6 +15069,7 @@ dependencies = [
  "raea-sys-engine-shaders",
  "raea-sys-post",
  "raea-sys-rt",
+ "raea-sys-viewbox",
  "serde_json",
  "wgpu",
 ]
@@ -16173,10 +16174,12 @@ name = "raea-sys-framepass"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "raea-sys-compose",
  "raea-sys-frame",
  "raea-sys-material",
  "raea-sys-sampler",
  "raea-sys-shader",
+ "raea-sys-viewbox",
  "serde_json",
 ]
 

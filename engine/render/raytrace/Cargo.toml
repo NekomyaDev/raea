@@ -11,6 +11,8 @@ description = "raea-render's ray tracing: Bevy's Solari for a scene whose camera
 raea-io-trace = { path = "../../../io/trace" }
 # the jitter's Halton places (a facility of raea-sys-post's steady)
 raea-sys-post = { path = "../../../systems/post" }
+# Overscan, the camera's wider view (the denoiser crops it back)
+raea-sys-viewbox = { path = "../../../systems/viewbox" }
 serde_json = "1"
 # its own wgpu shaders read from a project's engine-shaders/ or the checkout (RAEA_ENGINE_SHADERS), as the embedded ones
 raea-sys-engine-shaders = { path = "../../../systems/engine-shaders" }

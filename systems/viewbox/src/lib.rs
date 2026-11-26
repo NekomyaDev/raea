@@ -12,34 +12,81 @@ pub struct TagRowTarget(pub Handle<Image>);
 #[derive(Resource, Default)]
 pub struct ViewBox(pub Option<[u32; 4]>);
 
+/// Overscan: a camera's main pass draws `margin` of its view more on every side (0.05: a twentieth of the width left and
+/// right, of the height top and bottom), and what draws it crops the middle back out, so the light a traced view
+/// gathers from its neighbours and from the frames before has something to gather at the frame's border
+/// (docs/raytracing.feature RT40). Put on a camera by what does the cropping (raea-render-raytrace's denoiser), never
+/// by a composition.
+#[derive(Component, Clone, Copy, PartialEq, Debug, Default)]
+pub struct Overscan {
+    pub margin: f32,
+    /// the margin the camera's view was last widened by (tag_row_view sets it): what is cropped back
+    pub drawn: f32,
+}
+
+impl Overscan {
+    /// The margin as it applies: none without the component, at most a quarter.
+    pub fn of(o: Option<&Overscan>) -> f32 {
+        o.map_or(0.0, |o| if o.margin.is_finite() { o.margin.clamp(0.0, 0.25) } else { 0.0 })
+    }
+
+    /// The margin the camera's view is drawn wider by: none until tag_row_view has widened it.
+    pub fn drawn(o: Option<&Overscan>) -> f32 {
+        o.map_or(0.0, |o| o.drawn)
+    }
+}
+
+/// A sub view drawn `k` wider on every side, about its target's middle.
+pub fn widened(v: bevy::camera::SubCameraView, k: f32) -> bevy::camera::SubCameraView {
+    if k <= 0.0 {
+        return v;
+    }
+    // only the ratios count: in hundredths of a pixel, so the wider size isn't rounded to whole ones
+    let (full, size) = (v.full_size * 100, v.size.as_vec2() * 100.0);
+    bevy::camera::SubCameraView { full_size: full, offset: v.offset * 100.0 - size * k, size: (size * (1.0 + 2.0 * k)).round().as_uvec2() }
+}
+
 /// A camera drawing to the Engine's target draws a w x h Viewport of it, the frame's own, above the tag row: a view of
 /// w x (h + 1) drew the 3D 0.14% larger and half a pixel low against a camera on a w x h target, a plain App's
 /// (docs/blitz-bevy.feature B3 H10), and against the looks' cells. With a view box, its own view is the box's (the
 /// target a sub view of it, offset by the box's place). The Viewport this gave a camera (`ours`) is taken off when a
 /// box comes: a camera given it on the frames before the page had laid the box out (a render's first draws) kept it,
 /// and drew the whole page's view, cropped to the box (#130).
-pub fn tag_row_view(t: Res<TagRowTarget>, images: Res<Assets<Image>>, view_box: Option<Res<ViewBox>>, mut ours: Local<bevy::platform::collections::HashSet<Entity>>, mut q: Query<(Entity, &mut Camera, &RenderTarget), Without<raea_sys_frame::TagCamera>>) {
+pub fn tag_row_view(t: Res<TagRowTarget>, images: Res<Assets<Image>>, view_box: Option<Res<ViewBox>>, mut ours: Local<bevy::platform::collections::HashSet<Entity>>, mut q: Query<(Entity, &mut Camera, &RenderTarget, Option<&mut Overscan>), Without<raea_sys_frame::TagCamera>>) {
     let Some(img) = images.get(&t.0) else { return };
     let s = img.size();
     let view = match view_box.and_then(|v| v.0) {
         Some([x, y, w, h]) => bevy::camera::SubCameraView { full_size: UVec2::new(w, h), offset: Vec2::new(-(x as f32), -(y as f32)), size: s },
         None => bevy::camera::SubCameraView { full_size: UVec2::new(s.x, s.y - 1), offset: Vec2::ZERO, size: s },
     };
-    for (e, mut c, rt) in &mut q {
+    for (e, mut c, rt, mut over) in &mut q {
+        let k = Overscan::of(over.as_deref());
+        // drawn wider only below, where this gives the camera its view
+        let mut drawn = 0.0;
         // a camera with its own Viewport (a ViewportNode's) sees its viewport's shape, as Bevy sizes it, never the tag row
-        if c.viewport.is_some() && !ours.contains(&e) { if c.sub_camera_view.is_some() { c.sub_camera_view = None; } continue; }
-        if !matches!(rt, RenderTarget::Image(i) if i.handle == t.0) { continue; }
+        let own = c.viewport.is_some() && !ours.contains(&e);
+        if own || !matches!(rt, RenderTarget::Image(i) if i.handle == t.0) {
+            if own && c.sub_camera_view.is_some() { c.sub_camera_view = None; }
+            if let Some(o) = over.as_mut() && o.drawn != 0.0 { o.drawn = 0.0; }
+            continue;
+        }
         if view.offset == Vec2::ZERO {
             // a w x h Viewport: Bevy's orthographic sub view takes its area from the w x (h + 1) target, 0.14% small
             // (2d/sprite_slice), and a draw in clip space (a PhaseItem, custom_phase_item) maps to its h + 1 rows
             if c.viewport.as_ref().is_none_or(|v| v.physical_position != UVec2::ZERO || v.physical_size != view.full_size) { c.viewport = Some(bevy::camera::Viewport { physical_size: view.full_size, ..default() }); }
-            if c.sub_camera_view.is_some() { c.sub_camera_view = None; }
+            // overscan: the Viewport's own view, wider
+            let wide = (k > 0.0).then(|| widened(bevy::camera::SubCameraView { full_size: view.full_size, offset: Vec2::ZERO, size: view.full_size }, k));
+            if c.sub_camera_view != wide { c.sub_camera_view = wide; }
             ours.insert(e);
+            drawn = k;
         } else {
             if c.viewport.is_some() { c.viewport = None; }
+            let view = widened(view, k);
             if c.sub_camera_view != Some(view) { c.sub_camera_view = Some(view); }
             ours.remove(&e);
+            drawn = k;
         }
+        if let Some(o) = over.as_mut() && o.drawn != drawn { o.drawn = drawn; }
     }
 }
 
@@ -77,6 +124,28 @@ mod tests {
         app.update();
         let c = app.world().get::<Camera>(cam).unwrap();
         assert!(c.sub_camera_view.is_none() && c.viewport.as_ref().is_some_and(|v| v.physical_size == UVec2::new(600, 600)));
+    }
+
+    #[test]
+    fn overscan_widens_the_view_about_its_middle() {
+        let (mut app, cam, _) = app();
+        app.world_mut().entity_mut(cam).insert(Overscan { margin: 0.05, drawn: 0.0 });
+        app.update();
+        let c = app.world().get::<Camera>(cam).unwrap();
+        assert_eq!(c.viewport.as_ref().map(|v| v.physical_size), Some(UVec2::new(600, 600)), "the Viewport stays");
+        let v = c.sub_camera_view.expect("a wider sub view");
+        assert_eq!(app.world().get::<Overscan>(cam).unwrap().drawn, 0.05);
+        assert_eq!((v.full_size, v.offset, v.size), (UVec2::new(60000, 60000), Vec2::new(-3000.0, -3000.0), UVec2::new(66000, 66000)));
+        // with a view box: wider about the target's middle, the box's view in the middle of it
+        app.world_mut().resource_mut::<ViewBox>().0 = Some([100, 100, 400, 400]);
+        app.update();
+        let v = app.world().get::<Camera>(cam).unwrap().sub_camera_view.unwrap();
+        assert_eq!((v.full_size, v.offset, v.size), (UVec2::new(40000, 40000), Vec2::new(-13000.0, -13005.0), UVec2::new(66000, 66110)));
+        // taken off: the frame's Viewport and no sub view
+        app.world_mut().resource_mut::<ViewBox>().0 = None;
+        app.world_mut().entity_mut(cam).remove::<Overscan>();
+        app.update();
+        assert!(app.world().get::<Camera>(cam).unwrap().sub_camera_view.is_none());
     }
 
     #[test]

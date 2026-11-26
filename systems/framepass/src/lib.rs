@@ -132,7 +132,9 @@ pub fn module(source: &str, uniforms: &[(String, &'static str)], textures: &[Str
     if prepass {
         m += "@group(0) @binding(13) var raea_depth: texture_depth_2d;\n\
               @group(0) @binding(14) var raea_normal: texture_2d<f32>;\n\
-              fn raea_texel(uv: vec2<f32>, size: vec2<u32>) -> vec2<i32> { return clamp(vec2<i32>(raea_view_uv(clamp(uv, vec2<f32>(0.0), vec2<f32>(0.99999))) * vec2<f32>(size)), vec2<i32>(0), vec2<i32>(size) - vec2<i32>(1)); }\n\
+              // the main pass may have drawn the view smaller, in its Viewport's corner (a render scale), and wider (overscan):\n\
+              // near.yz is the part of the Viewport the frame's own view takes, near.w how much wider a side it drew\n\
+              fn raea_texel(uv: vec2<f32>, size: vec2<u32>) -> vec2<i32> { return clamp(vec2<i32>((raea_pass.view.zw + (clamp(uv, vec2<f32>(0.0), vec2<f32>(0.99999)) + raea_pass.near.w) * raea_pass.near.yz * raea_pass.view.xy) * vec2<f32>(size)), vec2<i32>(0), vec2<i32>(size) - vec2<i32>(1)); }\n\
               // reverse-Z: the depth is near / distance, 0 where nothing was drawn\n\
               fn depth(uv: vec2<f32>) -> f32 {\n\
               \x20   let d = textureLoad(raea_depth, raea_texel(uv, textureDimensions(raea_depth)), 0);\n\
@@ -184,7 +186,8 @@ pub fn build(world: &mut World, v: &Value, mut image: impl FnMut(&mut World, &Va
 pub fn put(world: &mut World, cam: Entity, passes: Vec<Pass>) {
     let mut e = world.entity_mut(cam);
     if passes.iter().any(|p| p.prepass) {
-        e.insert((bevy::core_pipeline::prepass::DepthPrepass, bevy::core_pipeline::prepass::NormalPrepass, Msaa::Off));
+        // PrepassRead: msaa_for_3d turned a video's MSAA back on under the pass, refused at its third frame (as #159)
+        e.insert((bevy::core_pipeline::prepass::DepthPrepass, bevy::core_pipeline::prepass::NormalPrepass, Msaa::Off, raea_sys_compose::passes::PrepassRead));
     }
     e.insert(FramePasses(passes));
 }
@@ -301,7 +304,7 @@ fn queue(views: Query<(&ViewTarget, &FramePasses)>, pipelines: Option<ResMut<Pip
     }
 }
 
-type Views<'w, 's> = ViewQuery<'w, 's, (&'static ViewTarget, &'static FramePasses, &'static ExtractedView, Option<&'static ViewPrepassTextures>, Option<&'static ExtractedCamera>)>;
+type Views<'w, 's> = ViewQuery<'w, 's, (&'static ViewTarget, &'static FramePasses, &'static ExtractedView, Option<&'static ViewPrepassTextures>, Option<&'static ExtractedCamera>, Option<&'static bevy::camera::MainPassResolutionOverride>, Option<&'static raea_sys_viewbox::Overscan>)>;
 
 /// The camera's Viewport in its target (x, y, w, h in px), and its size and corner over the target's (the uniforms'
 /// `view`); none without a Viewport, the pass then spanning the target.
@@ -320,15 +323,24 @@ fn rect(at: UVec2, size: UVec2, target: UVec2) -> Option<([f32; 4], Vec4)> {
     Some(([at.x, at.y, size.x, size.y], Vec4::new(size.x / t.x, size.y / t.y, at.x / t.x, at.y / t.y)))
 }
 
+/// Where the frame's own view lies in the depth and the normals: the share of the camera's Viewport it takes a side
+/// (x, y), and how much wider a side the main pass drew (z). The main pass draws a `part` of the Viewport, from its
+/// corner, when the view has a render scale, and `k` wider a side with overscan; the frame is the middle of that.
+fn deep(part: Option<UVec2>, port: Option<UVec2>, k: f32) -> Vec3 {
+    let share = part.zip(port).filter(|(_, v)| v.x > 0 && v.y > 0).map_or(Vec2::ONE, |(p, v)| p.as_vec2() / v.as_vec2());
+    (share / (1.0 + 2.0 * k)).extend(k)
+}
+
 /// The passes placed before tone mapping (BEFORE) or after it.
 fn draw<const BEFORE: bool>(view: Views<'_, '_>, p: Option<Res<Pipelines>>, cache: Res<PipelineCache>, images: Res<RenderAssets<GpuImage>>, fallback: Res<FallbackImage>, mut ctx: RenderContext) {
     let Some(p) = p else { return };
     let at = if BEFORE { At::BeforeTonemap } else { At::AfterTonemap };
-    let (target, passes, extracted, prepass, camera) = view.into_inner();
+    let (target, passes, extracted, prepass, camera, part, over) = view.into_inner();
     // a perspective camera's near plane, from its infinite reverse-Z projection
     let near = extracted.clip_from_view.w_axis.z;
     let port = viewport(camera);
     let view_uv = port.map_or(Vec4::new(1.0, 1.0, 0.0, 0.0), |p| p.1);
+    let deep = deep(part.map(|p| p.0), camera.and_then(|c| c.physical_viewport_size), raea_sys_viewbox::Overscan::drawn(over));
     for pass in passes.0.iter().filter(|x| x.at == at) {
         if let Some(w) = &pass.written {
             let Some((layout, id)) = p.written.get(&(pass.shader, target.main_texture_format())) else { continue };
@@ -350,7 +362,7 @@ fn draw<const BEFORE: bool>(view: Views<'_, '_>, p: Option<Res<Pipelines>>, cach
             continue;
         }
         let mut bytes: Vec<u8> = Vec::with_capacity(UNIFORM_BYTES as usize);
-        for v in [Vec4::new(near, 0.0, 0.0, 0.0), view_uv].into_iter().chain(pass.slots.iter().copied()) {
+        for v in [Vec4::new(near, deep.x, deep.y, deep.z), view_uv].into_iter().chain(pass.slots.iter().copied()) {
             for f in v.to_array() {
                 bytes.extend_from_slice(&f.to_ne_bytes());
             }
@@ -446,7 +458,16 @@ mod tests {
         assert!(d.contains("fn depth(") && d.contains("fn normal(") && !d.contains("raea_frame_pass("));
         // the frame, the depth and the normals are read at the Viewport's uv mapped onto their textures
         assert!(m.contains("textureSampleLevel(raea_frame, raea_frame_sampler, raea_view_uv(clamp(uv, h, 1.0 - h)), 0.0)"));
-        assert!(d.contains("vec2<i32>(raea_view_uv(clamp(uv, vec2<f32>(0.0), vec2<f32>(0.99999))) * vec2<f32>(size))"));
+        assert!(d.contains("(raea_pass.view.zw + (clamp(uv, vec2<f32>(0.0), vec2<f32>(0.99999)) + raea_pass.near.w) * raea_pass.near.yz * raea_pass.view.xy) * vec2<f32>(size)"));
+    }
+
+    #[test]
+    fn the_depth_is_read_where_the_main_pass_drew_the_frame() {
+        assert_eq!(deep(None, Some(UVec2::new(640, 360)), 0.0), Vec3::new(1.0, 1.0, 0.0));
+        assert_eq!(deep(Some(UVec2::new(320, 180)), Some(UVec2::new(640, 360)), 0.0), Vec3::new(0.5, 0.5, 0.0));
+        // 5% overscan drawn at 1 / 1.1 of the size, filling the Viewport: the frame is its middle, uv 0 at 0.05 / 1.1
+        let d = deep(Some(UVec2::new(640, 360)), Some(UVec2::new(640, 360)), 0.05);
+        assert!((d.x - 1.0 / 1.1).abs() < 1e-6 && ((0.0 + d.z) * d.x - 0.05 / 1.1).abs() < 1e-6 && ((1.0 + d.z) * d.x - 1.05 / 1.1).abs() < 1e-6);
     }
 
     #[test]

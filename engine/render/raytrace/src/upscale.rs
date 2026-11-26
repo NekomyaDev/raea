@@ -41,18 +41,49 @@ static NONE: AtomicBool = AtomicBool::new(false);
 
 /// After app.finish(): the jitter and the main pass's size in the main world, the scaler after the main pass.
 pub(crate) fn add(app: &mut App) {
-    app.add_systems(PostUpdate, jitter);
+    app.add_systems(PostUpdate, (jitter, widen.before(raea_sys_viewbox::tag_row_view).before(bevy::camera::CameraUpdateSystems)));
     let Some(r) = app.get_sub_app_mut(RenderApp) else { return };
     r.add_systems(ExtractSchedule, extract).add_systems(Core3d, upscale.in_set(Core3dSystems::EarlyPostProcess));
 }
 
 /// The fraction of the view's size a side its main pass draws at, 1/3 to 1: RAEA_SOLARI_SCALE on a Solari camera, else
 /// its RenderScale; 1 where there's no scaler.
-fn scale(rs: Option<&RenderScale>, solari: bool) -> f32 {
+fn scale(rs: Option<&RenderScale>, solari: bool, k: f32) -> f32 {
     static FORCED: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
     let forced = *FORCED.get_or_init(|| std::env::var("RAEA_SOLARI_SCALE").ok().and_then(|v| v.parse::<f32>().ok()));
     let s = if solari && let Some(f) = forced { f } else { rs.map_or(1.0, |r| r.scale) };
-    if NONE.load(Ordering::Relaxed) || !s.is_finite() || s >= 0.999 { 1.0 } else { s.clamp(1.0 / 3.0, 1.0) }
+    let s = if NONE.load(Ordering::Relaxed) || !s.is_finite() || s >= 0.999 { 1.0 } else { s.clamp(1.0 / 3.0, 1.0) };
+    // overscan: the wider main pass has to fit the view's textures
+    if k > 0.0 { s.min(1.0 / (1.0 + 2.0 * k)) } else { s }
+}
+
+/// The denoiser stopped (metalfx.rs): nothing crops a wider view back, so no view is drawn wider.
+pub(crate) static NO_DENOISER: AtomicBool = AtomicBool::new(false);
+
+/// A Solari camera's overscan as it applies: its settings', where the denoiser brings the view up in one pass (it does
+/// the cropping); none otherwise.
+fn overscan(solari: bool, st: &super::SolariSettings) -> f32 {
+    if !solari || !st.denoise || st.upscale == "two" || NONE.load(Ordering::Relaxed) || NO_DENOISER.load(Ordering::Relaxed) || !st.overscan.is_finite() {
+        return 0.0;
+    }
+    st.overscan.clamp(0.0, 0.25)
+}
+
+/// Each Solari camera's Overscan from its settings, for the view it draws (raea-sys-viewbox widens it).
+#[allow(clippy::type_complexity)]
+fn widen(mut cmd: Commands, cams: Query<(Entity, Has<SolariLighting>, Option<&super::SolariSettings>, Option<&raea_sys_viewbox::Overscan>), With<Camera3d>>) {
+    for (e, solari, st, has) in &cams {
+        let k = overscan(solari, &super::settings::of(st));
+        match (k > 0.0, has) {
+            (true, has) if has.map(|o| o.margin) != Some(k) => {
+                cmd.entity(e).insert(raea_sys_viewbox::Overscan { margin: k, drawn: 0.0 });
+            }
+            (false, Some(_)) => {
+                cmd.entity(e).remove::<raea_sys_viewbox::Overscan>();
+            }
+            _ => {}
+        }
+    }
 }
 
 /// The denoiser ran on the view this frame (metalfx.rs sets it; the scaler, after it, reads and clears it).
@@ -94,10 +125,10 @@ pub(crate) fn cycle(s: f32, frames: f32) -> u32 {
 /// gathers frames: photo 2's frame 95 had stepped edges held still, and jittered it came 15.9 -> 15.6 off the path
 /// tracer.
 #[allow(clippy::type_complexity)]
-fn jitter(mut cmd: Commands, frame: Res<FrameCount>, mut cams: Query<(Entity, Option<&RenderScale>, Has<SolariLighting>, Option<&mut TemporalJitter>, Has<Jittered>, Option<&super::SolariSettings>), With<Camera3d>>) {
-    for (e, rs, solari, j, mine, st) in &mut cams {
-        let s = scale(rs, solari);
+fn jitter(mut cmd: Commands, frame: Res<FrameCount>, mut cams: Query<(Entity, Option<&RenderScale>, Has<SolariLighting>, Option<&mut TemporalJitter>, Has<Jittered>, Option<&super::SolariSettings>, Option<&raea_sys_viewbox::Overscan>), With<Camera3d>>) {
+    for (e, rs, solari, j, mine, st, over) in &mut cams {
         let st = super::settings::of(st);
+        let s = scale(rs, solari, raea_sys_viewbox::Overscan::drawn(over));
         if s < 1.0 || (solari && st.aa && st.denoise && DENOISING.load(Ordering::Relaxed)) {
             let n = cycle(s, st.jitter_frames);
             let i = frame.0 % n + 1;
@@ -120,16 +151,24 @@ fn jitter(mut cmd: Commands, frame: Res<FrameCount>, mut cams: Query<(Entity, Op
 pub(crate) struct Upscaled;
 
 /// Each drawn-small camera's main pass size onto its view; taken off when its scale goes back to 1.
-fn extract(mut cmd: Commands, cams: Extract<Query<(RenderEntity, &Camera, Option<&RenderScale>, Has<SolariLighting>), With<Camera3d>>>, upscaled: Query<(), With<Upscaled>>) {
-    for (re, cam, rs, solari) in &cams {
-        let s = scale(rs, solari);
+#[allow(clippy::type_complexity)]
+fn extract(mut cmd: Commands, cams: Extract<Query<(RenderEntity, &Camera, Option<&RenderScale>, Has<SolariLighting>, Option<&raea_sys_viewbox::Overscan>), With<Camera3d>>>, upscaled: Query<(), With<Upscaled>>) {
+    for (re, cam, rs, solari, over) in &cams {
+        // as wide as the camera's view was drawn (raea-sys-viewbox's tag_row_view): the main pass matches that
+        let k = raea_sys_viewbox::Overscan::drawn(over);
+        let s = scale(rs, solari, k);
         match cam.physical_viewport_size() {
             Some(size) if s < 1.0 && cam.is_active => {
-                let part = (size.as_vec2() * s).round().as_uvec2().max(UVec2::ONE);
+                let part = (size.as_vec2() * s * (1.0 + 2.0 * k)).round().as_uvec2().clamp(UVec2::ONE, size);
                 cmd.entity(re).insert((MainPassResolutionOverride(part), Upscaled));
+                if k > 0.0 {
+                    cmd.entity(re).insert(raea_sys_viewbox::Overscan { margin: k, drawn: k });
+                } else {
+                    cmd.entity(re).remove::<raea_sys_viewbox::Overscan>();
+                }
             }
             _ if upscaled.contains(re) => {
-                cmd.entity(re).remove::<(MainPassResolutionOverride, Upscaled)>();
+                cmd.entity(re).remove::<(MainPassResolutionOverride, Upscaled, raea_sys_viewbox::Overscan)>();
             }
             _ => {}
         }

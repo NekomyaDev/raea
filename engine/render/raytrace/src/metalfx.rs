@@ -89,6 +89,8 @@ struct View {
     /// the split emission's history (RAEA_SOLARI_EMISSIVE=taa, emit_taa.rs)
     taa: Option<super::emit_taa::History>,
     fresh: bool,
+    /// overscan: the output is wider than the colour, and `run` copies its middle over once the emission is back in
+    cropped: bool,
 }
 
 #[derive(Default)]
@@ -162,7 +164,7 @@ impl View {
                 mask: texture(dev, size, wgpu::TextureFormat::R32Float, guide, "metalfx denoise strength"),
                 out: texture(dev, out_size, wgpu::TextureFormat::Rgba16Float, guide | U::RENDER_ATTACHMENT | U::COPY_SRC, "metalfx output"),
                 taa: taa.then(|| super::emit_taa::History::new(dev, out_size)),
-                fresh: true,
+                fresh: true, cropped: false,
             })
         }
     }
@@ -205,13 +207,28 @@ impl View {
             s.setShouldResetHistory(reset || self.fresh);
             matrices(s, view.world_from_view.to_matrix().inverse(), view.clip_from_view);
             s.encodeToCommandBuffer(cb);
-            let blit = cb.blitCommandEncoder().ok_or("no blit encoder")?;
-            let o = MTLOrigin { x: 0, y: 0, z: 0 };
-            let size = MTLSize { width: self.out_size.x as _, height: self.out_size.y as _, depth: 1 };
-            blit.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(&out, 0, 0, o, size, &color, 0, 0, o);
-            blit.endEncoding();
+            if !self.cropped {
+                let blit = cb.blitCommandEncoder().ok_or("no blit encoder")?;
+                let o = MTLOrigin { x: 0, y: 0, z: 0 };
+                let size = MTLSize { width: self.out_size.x as _, height: self.out_size.y as _, depth: 1 };
+                blit.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(&out, 0, 0, o, size, &color, 0, 0, o);
+                blit.endEncoding();
+            }
         }
         self.fresh = false;
+        Ok(())
+    }
+
+    /// Overscan: the `full` middle of the wider output, from `at`, over the colour.
+    fn crop_onto(&self, cb: &ProtocolObject<dyn MTLCommandBuffer>, color: &wgpu::Texture, at: UVec2, full: UVec2) -> Result<(), &'static str> {
+        let (out, color) = (mtl(&self.out).ok_or("a texture isn't a Metal one")?, mtl(color).ok_or("a texture isn't a Metal one")?);
+        unsafe {
+            let blit = cb.blitCommandEncoder().ok_or("no blit encoder")?;
+            let from = MTLOrigin { x: at.x as _, y: at.y as _, z: 0 };
+            let size = MTLSize { width: full.x as _, height: full.y as _, depth: 1 };
+            blit.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(&out, 0, 0, from, size, &color, 0, 0, MTLOrigin { x: 0, y: 0, z: 0 });
+            blit.endEncoding();
+        }
         Ok(())
     }
 }
@@ -241,7 +258,7 @@ fn matrices(s: &ProtocolObject<dyn MTLFXTemporalDenoisedScaler>, world_to_view: 
     }
 }
 
-type Viewed = (&'static ViewTarget, &'static ViewPrepassTextures, &'static ExtractedView, &'static ExtractedCamera, &'static SolariLighting, Option<&'static MainPassResolutionOverride>, Option<&'static TemporalJitter>, Has<super::upscale::Upscaled>, Option<&'static SolariGuideTextures>, Option<&'static super::SolariSettings>);
+type Viewed = (&'static ViewTarget, &'static ViewPrepassTextures, &'static ExtractedView, &'static ExtractedCamera, &'static SolariLighting, Option<&'static MainPassResolutionOverride>, Option<&'static TemporalJitter>, Has<super::upscale::Upscaled>, Option<&'static SolariGuideTextures>, Option<&'static super::SolariSettings>, Option<&'static raea_sys_viewbox::Overscan>);
 
 /// Before the forward meshes: a view at its full size, or one drawn small whose settings upscale in "two" (its corner).
 /// Each view's settings go into the run's trace here, once and on a change.
@@ -284,7 +301,7 @@ fn denoise_up(view: ViewQuery<Viewed>, device: Res<RenderDevice>, mut kit: Local
     run(entity, item, &st, &device, &mut kit, &mut ctx, true);
 }
 
-type Item<'a> = (&'a ViewTarget, &'a ViewPrepassTextures, &'a ExtractedView, &'a ExtractedCamera, &'a SolariLighting, Option<&'a MainPassResolutionOverride>, Option<&'a TemporalJitter>, bool, Option<&'a SolariGuideTextures>, Option<&'a super::SolariSettings>);
+type Item<'a> = (&'a ViewTarget, &'a ViewPrepassTextures, &'a ExtractedView, &'a ExtractedCamera, &'a SolariLighting, Option<&'a MainPassResolutionOverride>, Option<&'a TemporalJitter>, bool, Option<&'a SolariGuideTextures>, Option<&'a super::SolariSettings>, Option<&'a raea_sys_viewbox::Overscan>);
 
 /// The guides from the G-buffer and the emissive out, at the main pass's size; MetalFX's denoiser, out to the whole
 /// view when `up`; its output over the colour and the emissive back in.
@@ -292,7 +309,7 @@ fn run(entity: Entity, item: Item, st: &super::SolariSettings, device: &RenderDe
     if kit.off {
         return;
     }
-    let (target, pre, ext, cam, solari, part, jitter, _, guides, _) = item;
+    let (target, pre, ext, cam, solari, part, jitter, _, guides, _, over) = item;
     // Solari wrote its guides for every view; this one reads them unless its settings say the G-buffer's
     let guides = guides.filter(|_| st.guides);
     let (Some(depth), Some(motion), Some(gbuf)) = (pre.depth.as_ref(), pre.motion_vectors.as_ref(), pre.deferred.as_ref()) else { return };
@@ -302,7 +319,12 @@ fn run(entity: Entity, item: Item, st: &super::SolariSettings, device: &RenderDe
     let color: &wgpu::Texture = target.main_texture();
     let full = UVec2::new(color.width(), color.height());
     let size = part.map_or(full, |p| p.0);
-    let out_size = if up { full } else { size };
+    // overscan: the main pass drew the view wider, so the denoised frame is wider than the colour, and its middle is
+    // what the colour takes (below)
+    let k = if up { raea_sys_viewbox::Overscan::drawn(over) } else { 0.0 };
+    let wide = (full.as_vec2() * (1.0 + 2.0 * k)).round().as_uvec2();
+    let crop = (k > 0.0).then(|| (wide - full) / 2);
+    let out_size = if !up { size } else if crop.is_some() { wide } else { full };
     let jitter = jitter.map_or(Vec2::ZERO, |j| -j.offset * super::upscale::jitter_gain(&st.jitter, true, true));
     let dev = device.wgpu_device().clone();
     // with Solari's guides, the denoiser's depth is theirs: a mirror's pixel as far off as what it reflects, so when what
@@ -318,6 +340,7 @@ fn run(entity: Entity, item: Item, st: &super::SolariSettings, device: &RenderDe
             }
             Err(e) => {
                 kit.off = true;
+                super::upscale::NO_DENOISER.store(true, std::sync::atomic::Ordering::Relaxed);
                 eprintln!("raea: <SolariLighting>: no MetalFX denoiser ({e}); the lighting draws un-denoised (docs/raytracing.feature RT4)");
                 return;
             }
@@ -339,11 +362,12 @@ fn run(entity: Entity, item: Item, st: &super::SolariSettings, device: &RenderDe
     let back = ext.world_from_view.back();
     let reset = solari.reset || kit.views.get(&entity).is_none_or(|v| v.fresh);
     // the jitter's cycle at this render scale, how long a twig glimpsed through it can stay away (emit_taa.wgsl)
-    let cycle = super::upscale::cycle(size.x as f32 / full.x as f32, st.jitter_frames) as f32;
+    let cycle = super::upscale::cycle(size.x as f32 / out_size.x.max(full.x) as f32, st.jitter_frames) as f32;
     let words: [f32; 16] = [cam.exposure, if split { 1.0 } else { 0.0 }, if reset { 1.0 } else { 0.0 }, super::emit_taa::debug(), out_size.x as f32, out_size.y as f32, size.x as f32, size.y as f32, back.x, back.y, back.z, st.emissive_sharpness, jitter.x, jitter.y, cycle, st.knee.max(0.0) * st.preexposure / 16.0];
     let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_ne_bytes()).collect();
     let params = wgpu::util::DeviceExt::create_buffer_init(&dev, &wgpu::util::BufferInitDescriptor { label: Some("metalfx params"), contents: &bytes, usage: wgpu::BufferUsages::UNIFORM });
     let v = kit.views.get_mut(&entity).unwrap();
+    v.cropped = crop.is_some();
     let views = [&v.diffuse, &v.specular, &v.normal, &v.rough].map(|t| t.create_view(&Default::default()));
     let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&*gbuf.texture.default_view) }];
     for (i, tv) in views.iter().enumerate() {
@@ -384,6 +408,9 @@ fn run(entity: Entity, item: Item, st: &super::SolariSettings, device: &RenderDe
         })
     };
     ctx.add_command_buffer(raw.finish());
+    // overscan: the emission goes back into the denoiser's wider output, whose middle the colour then takes
+    let out_view = v.out.create_view(&Default::default());
+    let color_view = if crop.is_some() { out_view } else { color_view };
     // the emissive back in, after the denoiser's command buffer (add_command_buffer flushed the encoder before it)
     if split {
     let mut entries = vec![
@@ -419,6 +446,19 @@ fn run(entity: Entity, item: Item, st: &super::SolariSettings, device: &RenderDe
         pass.set_bind_group(0, &bind, &[]);
         pass.dispatch_workgroups(out_size.x.div_ceil(8), out_size.y.div_ceil(8), 1);
     }
+    // the middle of the wider output over the colour: a raw blit as the denoiser's own (the colour has no COPY_DST for
+    // wgpu's), in a command buffer after the emission's (add_command_buffer flushes the encoder before it)
+    let mut done = done;
+    if let (Some(at), true) = (crop, done.is_ok()) {
+        let mut raw = dev.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("metalfx overscan crop") });
+        done = unsafe {
+            raw.as_hal_mut::<Metal, _, _>(|e| match e.and_then(|e| e.raw_command_buffer()) {
+                Some(cb) => v.crop_onto(cb, color, at, full),
+                None => Err("wgpu gave no Metal command buffer"),
+            })
+        };
+        ctx.add_command_buffer(raw.finish());
+    }
     use std::sync::atomic::Ordering::Relaxed;
     super::upscale::DENOISED.store(done.is_ok(), Relaxed);
     super::upscale::DENOISING.store(done.is_ok(), Relaxed);
@@ -427,6 +467,7 @@ fn run(entity: Entity, item: Item, st: &super::SolariSettings, device: &RenderDe
     }
     if let Err(e) = done {
         kit.off = true;
+        super::upscale::NO_DENOISER.store(true, Relaxed);
         eprintln!("raea: <SolariLighting>: the MetalFX denoiser stopped ({e}); the lighting draws un-denoised");
     }
 }

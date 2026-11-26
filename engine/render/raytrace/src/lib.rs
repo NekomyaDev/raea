@@ -84,6 +84,11 @@ pub struct SolariSettings {
     /// the traced scene follows what moves: a skinned mesh's traced twin posed each frame (RT5, a trial;
     /// RAEA_SOLARI_DYNAMIC). A hidden part leaves the traced scene with or without it (SG9)
     pub dynamic: bool,
+    /// overscan: the main pass draws this much of the view more on every side (0.05 is a twentieth), and the denoiser
+    /// crops the middle back out, so the light at the frame's border has neighbours and history to gather from as the
+    /// camera moves (RT40; RAEA_SOLARI_OVERSCAN). 0, the default, is off. The view then draws at 1 / (1 + 2 x overscan)
+    /// of its size at most and is brought up; with the denoiser off, or `upscale` "two", it does nothing
+    pub overscan: f32,
 }
 
 impl Default for SolariSettings {
@@ -102,6 +107,7 @@ impl Default for SolariSettings {
             emissive_sharpness: 6.0,
             jitter_frames: 8.0,
             dynamic: false,
+            overscan: 0.0,
         }
     }
 }
