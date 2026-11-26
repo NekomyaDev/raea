@@ -190,6 +190,14 @@ pub struct Shot {
     pub fps: Option<f64>,
 }
 
+impl Kind {
+    /// as brief.ts writes it, and as raea judge's rubrics are named
+    pub fn name(self) -> &'static str {
+        // in the enum's order
+        ["scene", "kit", "shot", "cut"][self as usize]
+    }
+}
+
 /// Each kind's dials: what may be set, and what an unset one is read from the references as.
 pub fn dials(kind: Kind) -> &'static [&'static str] {
     match kind {

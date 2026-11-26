@@ -141,13 +141,17 @@ pub fn deliverables(c: &Cut) -> Vec<String> {
 /// Every `from` in the contract, with what it backs: the quotes `raea make status` finds in the brief's text.
 pub fn quotes(c: &Cut) -> Vec<(String, &str)> {
     let mut q: Vec<(String, &str)> = Vec::new();
-    q.extend(c.count.iter().map(|n| ("count".to_string(), n.from.as_str())));
+    if let Some(n) = &c.count {
+        q.push(("count".into(), &n.from));
+    }
     for (what, list) in [("say", &c.say), ("never", &c.never)] {
         for p in list {
             q.push((format!("{what} \"{}\"", p.text), &p.from));
         }
     }
-    q.extend(c.cta.iter().map(|t| ("cta".to_string(), t.from.as_str())));
+    if let Some(cta) = &c.cta {
+        q.push(("cta".into(), &cta.from));
+    }
     for o in &c.open {
         q.push((format!("open \"{}\"", o.question), &o.from));
     }

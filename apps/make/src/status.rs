@@ -59,15 +59,6 @@ pub fn sheets(job: &Job) -> Vec<(&'static str, PathBuf)> {
     out.into_iter().filter(|(_, f)| f.is_file()).collect()
 }
 
-pub(crate) fn kind_name(k: make::Kind) -> &'static str {
-    match k {
-        make::Kind::Scene => "scene",
-        make::Kind::Kit => "kit",
-        make::Kind::Shot => "shot",
-        make::Kind::Cut => "cut",
-    }
-}
-
 /// When a file last changed, and that as seconds since 1970 (a record entry's clock).
 fn mtime(p: &Path) -> Option<SystemTime> {
     std::fs::metadata(p).ok()?.modified().ok()
@@ -148,7 +139,7 @@ fn lods(job: &Job, notes: &str) -> Vec<Value> {
 /// fixed (the round passed) or answered in NOTES.md by its name. Its score gates once the judge is calibrated.
 fn critic(job: &Job, newest: Option<SystemTime>, notes: &str) -> Vec<Value> {
     let Some(last) = job.rounds.last() else {
-        let kind = kind_name(job.make.kind);
+        let kind = job.make.kind.name();
         let what = match job.make.kind {
             make::Kind::Kit => "raea render shared/components/KIT/lineup.tsx --review review/r1",
             make::Kind::Shot => "raea make framing --out review/r1",
@@ -164,7 +155,7 @@ fn critic(job: &Job, newest: Option<SystemTime>, notes: &str) -> Vec<Value> {
     };
     out.push(gate("critic", None, fresh, if fresh { format!("round {} judged after the newest deliverable", job.rounds.len()) } else { "the newest deliverable came after the last round: review and judge it again".into() }));
     // the kind's own rubric (MK5): a round judged on another's doesn't count
-    let kind = kind_name(job.make.kind);
+    let kind = job.make.kind.name();
     if last["kind"].as_str() != Some(kind) {
         let dir = last["dir"].as_str().unwrap_or("review/rN");
         out.push(gate("rubric", None, false, format!("the last round wasn't judged on the {kind} rubric: raea judge {dir} --kind {kind} --by claude")));
@@ -196,12 +187,11 @@ pub fn status(job: &Job) -> Value {
         missing.push(format!("NOTES.md with a \"{SKILL_HEADING}\" section (one line per thing that cost time; what the guide got wrong for this job)"));
     }
     let mut gates = checks(job);
-    if job.make.kind == make::Kind::Cut {
-        // the brief's rules over every delivered file (MK25-MK27); its critic is the person's review for now
-        gates.extend(job.make.cut.iter().flat_map(|c| raea_runtime_cut_plan::gates(c, job.dir)).map(|g| gate(g.name, g.of.as_deref(), g.clear, g.says)));
-    } else {
-        gates.extend(lods(job, &notes));
-        gates.extend(critic(job, newest, &notes));
+    gates.extend(lods(job, &notes));
+    match (&job.make.cut, job.make.kind) {
+        // a cut job: its brief's rules over every delivered file (MK25-MK27), and the person's review its critic
+        (Some(c), make::Kind::Cut) => gates.extend(raea_runtime_cut_plan::gates(c, job.dir).into_iter().map(|g| gate(g.name, g.of.as_deref(), g.clear, g.says))),
+        _ => gates.extend(critic(job, newest, &notes)),
     }
     let (asks, said) = crate::asked::gates(&sheets(job), job.ledger, &notes);
     gates.extend(asks);

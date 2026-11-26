@@ -88,7 +88,7 @@ pub fn status_of(brief: &Path, make: &Make) -> Value {
     let record = project.as_deref().map(raea_core_facts::record::read).unwrap_or_default();
     let (rounds, verdict, judged_at) = judged(dir);
     let ledger = asked::Ledger::read();
-    let job = status::Job { make, dir, project: project.as_deref(), record: &record, rounds: &rounds, verdict: verdict.as_ref(), judged_at, ledger: &ledger, score_gates: raea_app_judge::kind_gates(status::kind_name(make.kind)) };
+    let job = status::Job { make, dir, project: project.as_deref(), record: &record, rounds: &rounds, verdict: verdict.as_ref(), judged_at, ledger: &ledger, score_gates: raea_app_judge::kind_gates(make.kind.name()) };
     let mut s = status::status(&job);
     s["brief"] = Value::String(brief.display().to_string());
     s

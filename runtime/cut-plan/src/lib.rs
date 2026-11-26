@@ -5,7 +5,7 @@
 //! shown, no `never` phrase in its words or its text, and the CTA in its last seconds; and its frames check, run after
 //! its last change (FILE.frames-check.json, `raea frames check`), with no face cut and no text too small.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use raea_core_brief::cut::{self, Cut, norm};
 use serde_json::Value;
@@ -29,16 +29,11 @@ fn shape(f: &Path) -> Option<(u32, u32, f64)> {
     raea_io_soft::probe(f).ok().map(|p| (p.width.round() as u32, p.height.round() as u32, p.secs))
 }
 
-/// FILE.words.json, FILE.frames-check.json, FILE.render.json beside FILE.mp4.
-fn beside(f: &Path, ext: &str) -> PathBuf {
-    f.with_extension(ext)
-}
-
-/// A report beside the file, read when it's newer than the file (a report from before the last change says nothing
-/// about it now): Ok(json), or Err(why not).
+/// A report beside the file (FILE.words.json, FILE.frames-check.json), read when it's newer than the file (a report
+/// from before the last change says nothing about it now): Ok(json), or Err(why not).
 fn fresh(f: &Path, ext: &str, run: &str) -> Result<Value, String> {
-    let r = beside(f, ext);
-    let changed = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    let r = f.with_extension(ext);
+    let changed = |p: &Path| -> Option<std::time::SystemTime> { p.metadata().ok()?.modified().ok() };
     let Some(at) = changed(&r) else { return Err(format!("never run: {run}")) };
     if changed(f).is_some_and(|m| m > at) {
         return Err(format!("the file changed after it: {run} again"));
@@ -52,8 +47,9 @@ fn heard(words: &Value) -> Vec<(String, f64, f64)> {
     list.iter()
         .filter_map(|w| {
             let t = norm(w["text"].as_str().or_else(|| w["word"].as_str())?);
-            let s = w["start"].as_f64().or_else(|| w["start_ms"].as_f64().map(|m| m / 1000.0))?;
-            let e = w["end"].as_f64().or_else(|| w["end_ms"].as_f64().map(|m| m / 1000.0)).unwrap_or(s);
+            let at = |k: &str| w[k].as_f64().or(w[format!("{k}_ms")].as_f64().map(|ms| ms * 0.001));
+            let s = at("start")?;
+            let e = at("end").unwrap_or(s);
             (!t.is_empty()).then_some((t, s, e))
         })
         .collect()
@@ -166,7 +162,7 @@ fn file_gates(c: &Cut, plan: &cut::CutPlan, format: &str, f: &Path, rel: &str, s
         Ok(w) => {
             let words = heard(&w);
             let spoken: Vec<&str> = words.iter().map(|(t, ..)| t.as_str()).collect();
-            let screen = std::fs::read_to_string(beside(f, "render.json")).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()).map(|m| shown(&m)).unwrap_or_default();
+            let screen = std::fs::read_to_string(f.with_extension("render.json")).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()).map(|m| shown(&m)).unwrap_or_default();
             let on_screen = |s: &str, p: &str, gap| said_at(&s.split(' ').collect::<Vec<_>>(), p, gap).is_some();
             let on = |p: &str| said_at(&spoken, p, SAY_GAP).is_some() || screen.iter().any(|(s, _)| on_screen(s, p, SAY_GAP));
             let missing: Vec<&str> = c.say.iter().filter(|p| p.every != Some(false) && !on(&norm(&p.text))).map(|p| p.text.as_str()).collect();
@@ -251,9 +247,12 @@ pub fn gates(c: &Cut, dir: &Path) -> Vec<Gate> {
         }
     }
     // a phrase one cut is enough for
-    for (i, p) in c.say.iter().enumerate().filter(|(_, p)| p.every == Some(false)) {
-        let by: Vec<&String> = said.iter().filter(|(j, _)| *j == i).map(|(_, f)| f).collect();
-        out.push(gate("say-once", None, !by.is_empty(), if let Some(f) = by.first() { format!("\"{}\" in {f}", p.text) } else { format!("no cut says or shows \"{}\" (brief: \"{}\")", p.text, p.from) }));
+    for (i, p) in c.say.iter().enumerate() {
+        if p.every != Some(false) {
+            continue;
+        }
+        let by = said.iter().find_map(|(j, f)| (*j == i).then_some(f));
+        out.push(gate("say-once", None, by.is_some(), if let Some(f) = by { format!("\"{}\" in {f}", p.text) } else { format!("no cut says or shows \"{}\" (brief: \"{}\")", p.text, p.from) }));
     }
     out
 }
