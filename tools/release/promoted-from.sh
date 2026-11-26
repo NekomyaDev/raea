@@ -19,7 +19,7 @@ die() { echo "promoted-from: $*" >&2; exit 1; }
 # raea-skills pin) and docs/ are read by no build either (11-11, Shane: "promote skills to the latest possible"):
 # release.sh packs the skills the release's commit pins, and the skills gate (its skills-passed line) and check-cli
 # hold them to the candidate's binaries, so newer skills go out on a candidate's binaries
-SAME=(':(exclude)README.md' ':(exclude).github' ':(exclude)tools/release.sh' ':(exclude)tools/release-check.sh'
+SAME=(':(exclude)README.md' ':(exclude).github' ':(exclude)tools/release.sh' ':(exclude)tools/release-check.sh' ':(exclude)tools/release-appimage.sh'
   ':(exclude)tools/release' ':(exclude)tools/agents' ':(exclude)tools/raea-app' ':(exclude)skills' ':(exclude)docs')
 
 fetch_tag() { git cat-file -e "refs/tags/$1" 2>/dev/null || git fetch -q --depth=1 origin "refs/tags/$1:refs/tags/$1"; }
