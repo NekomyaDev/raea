@@ -126,6 +126,9 @@ pub fn apply_rows(world: &mut World, dir: &Path, rows: &[Tup]) -> Result<bool, S
             }
         }
     }
+    if world.resource::<FrameRows>().cols.id.len() != store::rows(world).len() {
+        name_rows(world);
+    }
     // a <BevyComponent> or <BevyResource> whose value a live frame changed (or a new one): set on its part
     plugins::apply_live_rows(world, &reflected)?;
     // a mesh spawned here with a shader over its surface: put on now that this frame's rows are in (scene3d's
@@ -169,8 +172,19 @@ pub fn remove_rows_from(world: &mut World, rows: &[(String, String)]) -> Result<
         // the rows after a dropped one moved up: their places again, from the store's order
         let ix: bevy::ecs::entity::EntityHashMap<usize> = store::rows(world).iter().enumerate().map(|(r, &e)| (e, r)).collect();
         world.resource_mut::<FrameRows>().ix = ix;
+        name_rows(world);
     }
     if gone.is_empty() { Ok(()) } else { Err(gone.join("; ")) }
+}
+
+/// The frame's row names (`cols.kind`, `cols.id`) as the store holds its rows now. A live scene's rows move up when one
+/// before them is dropped and new ones join at the end, and a <FramePass>'s or a <Compute>'s `follow` finds its row
+/// by `cols.id`: left as the scene opened, a pass read another row from the first drop on and kept the uniforms it
+/// opened with for the rest of a video (11-25: MALL RAT's exposure stood still, its daylight blown out).
+fn name_rows(world: &mut World) {
+    let (kinds, ids): (Vec<String>, Vec<String>) = store::rows(world).iter().filter_map(|&e| store::key(world, e)).map(|k| (k.kind.clone(), k.id.clone())).unzip();
+    let mut fr = world.resource_mut::<FrameRows>();
+    (fr.cols.kind, fr.cols.id) = (kinds.into(), ids.into());
 }
 
 /// Where a plain App's 3D camera draws when its camera row arrives through apply_rows (an Engine's draws into its frame).
@@ -381,4 +395,24 @@ pub(crate) fn spawn_3d(world: &mut World, e: Entity, t: &Tup, inserted: &[Tup], 
         _ => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_live_rows_name_follows_the_rows_dropped_before_it() {
+        let row = |kind: &str, id: &str, k: f64| Tup { kind: kind.into(), id: id.into(), vals: [("k".into(), V::N(k))].into() };
+        let mut s = store::Store::new(&[row("mesh", "a", 0.0), row("mesh", "b", 1.0), row("frame_pass", "frame_pass0", 2.0)]);
+        let mut fr = FrameRows::new(store::rows(&s.world).iter().enumerate().map(|(r, &e)| (e, r)).collect());
+        fr.cols = s.gather();
+        fr.live = Some(s.tups().into_iter().map(|t| t.vals).collect());
+        s.world.insert_resource(fr);
+        remove_rows_from(&mut s.world, &[("mesh".into(), "a".into())]).unwrap();
+        // the pass's row is one place up, and found there by its name (a FramePass's `follow`)
+        let fr = s.world.resource::<FrameRows>();
+        let r = fr.cols.id.iter().position(|i| i == "frame_pass0").unwrap();
+        assert_eq!((r, fr.at(r, "k")), (1, Some(V::N(2.0))));
+    }
 }
