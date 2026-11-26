@@ -225,6 +225,54 @@ pub fn ray_tri(o: Vec3, d: Vec3, [a, b, c]: [Vec3; 3]) -> Option<f32> {
     (t >= 0.0).then_some(t)
 }
 
+/// The part's lowest points (its feet): its vertices within a millimetre (or 2% of its height) of its lowest, and
+/// points across the faces lying there (a slab's corners overhang what holds it up; its middle doesn't), about 4 n at most.
+pub fn feet(p: &Part, n: usize) -> Vec<Vec3> {
+    let tol = (0.02 * (p.hi.y - p.lo.y)).clamp(0.0005, 0.003);
+    let low = |q: &Vec3| q.y <= p.lo.y + tol;
+    let mut v: Vec<Vec3> = p.tris.iter().flatten().filter(|q| low(q)).copied().collect();
+    let bases: Vec<&[Vec3; 3]> = p.tris.iter().filter(|t| t.iter().all(low)).collect();
+    let area: f32 = bases.iter().map(|t| 0.5 * (t[1] - t[0]).cross(t[2] - t[0]).length()).sum();
+    if area > 0.0 {
+        // about n points over the base, spread by area
+        let step = (area / n as f32).sqrt();
+        for t in bases {
+            let long = (t[1] - t[0]).length().max((t[2] - t[1]).length()).max((t[0] - t[2]).length());
+            let m = ((long / step).ceil() as usize).clamp(1, 32);
+            for i in 0..=m {
+                for j in 0..=(m - i) {
+                    let (a, b) = (i as f32 / m as f32, j as f32 / m as f32);
+                    v.push(t[0] + (t[1] - t[0]) * a + (t[2] - t[0]) * b);
+                }
+            }
+        }
+    }
+    v.sort_by(|a, b| (a.x, a.z, a.y).partial_cmp(&(b.x, b.z, b.y)).unwrap_or(std::cmp::Ordering::Equal));
+    v.dedup_by(|a, b| (*a - *b).length() < 1e-4);
+    if v.len() > 4 * n {
+        let k = v.len() as f32 / (4 * n) as f32;
+        v = (0..4 * n).map(|i| v[(i as f32 * k) as usize]).collect();
+    }
+    v
+}
+
+/// A wall, or a piece of one (the strip of wall over a window, the window in it): no thicker than WALL_THICK, at least
+/// WALL_WIDE across and WALL_TALL high (metres; the kitchen's strip over its back window is 9.6 cm).
+const WALL_THICK: f32 = 0.35;
+const WALL_WIDE: f32 = 0.8;
+const WALL_TALL: f32 = 0.05;
+/// Whether a part is a wall or a piece of one: thin, wide and high.
+pub fn wall(p: &Part) -> bool {
+    let e = p.hi - p.lo;
+    e.y >= WALL_TALL && e.x.min(e.z) <= WALL_THICK && e.x.max(e.z) >= WALL_WIDE
+}
+
+/// A wall's face area, for which of two is set into the other.
+pub fn face(p: &Part) -> f32 {
+    let e = p.hi - p.lo;
+    e.y * e.x.max(e.z)
+}
+
 /// Whether a part's own material gives off light (a lamp's panel, a neon tube): any of its emissive's red, green or
 /// blue above zero. A model's materials are in its file and aren't read here.
 pub fn glows(it: &Item) -> bool {

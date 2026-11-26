@@ -279,19 +279,21 @@ fn check_one(tsx: &Path, id: Option<String>, rules: &[Rule], args: &[String], wh
     Ok(Checked { file: tsx.to_path_buf(), id, found: finding::ranked(found), waits, render, shots, fps })
 }
 
-/// Whether a file names SolariLighting.
-fn names(p: &Path) -> bool {
-    std::fs::read_to_string(p).unwrap_or_default().contains("SolariLighting")
-}
-
 /// Whether a composition is lit by traced light: its file, or a .tsx beside it or a folder down, names SolariLighting.
 fn traced(tsx: &Path) -> bool {
-    if names(tsx) {
-        return true;
-    }
-    let Some(dir) = tsx.parent() else { return false };
+    let mut files = vec![tsx.to_path_buf()];
     let tsxs = |d: &Path| -> Vec<PathBuf> { std::fs::read_dir(d).into_iter().flatten().flatten().map(|e| e.path()).collect() };
-    tsxs(dir).into_iter().flat_map(|p| if p.is_dir() { tsxs(&p) } else { vec![p] }).filter(|p| p.extension().is_some_and(|x| x == "tsx")).any(|p| names(&p))
+    if let Some(dir) = tsx.parent() {
+        files.extend(tsxs(dir).into_iter().flat_map(|p| if p.is_dir() { tsxs(&p) } else { vec![p] }).filter(|p| p.extension().is_some_and(|x| x == "tsx")));
+    }
+    for f in files {
+        if let Ok(text) = std::fs::read_to_string(&f) {
+            if text.contains("SolariLighting") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// The findings of the newest hold of each frame of a composition (`raea light steady`), from its project's record.
@@ -303,9 +305,12 @@ fn light_held(tsx: &Path, id: Option<&str>) -> Vec<Finding> {
         if e.by != "raea light steady" || e.of != of {
             continue;
         }
-        let mut mine = e.findings;
-        if let Some(id) = id {
-            mine.retain(|f| f.about.iter().any(|a| a.name == id));
+        let mut mine = Vec::new();
+        for f in e.findings {
+            let mut about = f.about.iter().map(|a| a.name.as_str());
+            if id.is_none_or(|id| about.any(|n| n == id)) {
+                mine.push(f);
+            }
         }
         if let Some(frame) = mine.first().and_then(|f| f.frames) {
             newest.insert(frame[0], mine);

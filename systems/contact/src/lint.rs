@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use bevy::math::{Mat4, Vec3};
 use serde_json::{json, Value};
 
-use raea_core_scene::{Item, Part, base_ident, glows, label, parts_of, ray_tri, unparked};
+use raea_core_scene::{Item, Part, base_ident, face, feet, glows, label, parts_of, ray_tri, unparked, wall};
 
 use super::solid_of;
 
@@ -33,11 +33,6 @@ const SUNK_SHARE: f32 = 0.1;
 /// A door this far in front of the carcass behind it, the carcass covering it, is hung on it (doors stand off their
 /// cupboard's frame by a reveal; the kitchen pack's by up to 2 cm).
 const CARCASS: f32 = 0.025;
-/// A wall, or a piece of one (the strip of wall over a window, the window in it): no thicker than WALL_THICK, at least
-/// WALL_WIDE across and WALL_TALL high (metres; the kitchen's strip over its back window is 9.6 cm).
-const WALL_THICK: f32 = 0.35;
-const WALL_WIDE: f32 = 0.8;
-const WALL_TALL: f32 = 0.05;
 /// A part this big across its footprint (m²) with nothing under it is the ground.
 const GROUND: f32 = 1.0;
 /// The xz grid the scene's triangles are binned in, metres.
@@ -118,49 +113,6 @@ enum Rest {
     Ground,
 }
 
-/// The part's lowest points (its feet): its vertices within a millimetre (or 2% of its height) of its lowest, and
-/// points across the faces lying there (a slab's corners overhang what holds it up; its middle doesn't), at most FEET.
-fn feet(p: &Part) -> Vec<Vec3> {
-    let tol = (0.02 * (p.hi.y - p.lo.y)).clamp(0.0005, 0.003);
-    let low = |q: &Vec3| q.y <= p.lo.y + tol;
-    let mut v: Vec<Vec3> = p.tris.iter().flatten().filter(|q| low(q)).copied().collect();
-    let bases: Vec<&[Vec3; 3]> = p.tris.iter().filter(|t| t.iter().all(low)).collect();
-    let area: f32 = bases.iter().map(|t| 0.5 * (t[1] - t[0]).cross(t[2] - t[0]).length()).sum();
-    if area > 0.0 {
-        // about FEET points over the base, spread by area
-        let step = (area / FEET as f32).sqrt();
-        for t in bases {
-            let long = (t[1] - t[0]).length().max((t[2] - t[1]).length()).max((t[0] - t[2]).length());
-            let m = ((long / step).ceil() as usize).clamp(1, 32);
-            for i in 0..=m {
-                for j in 0..=(m - i) {
-                    let (a, b) = (i as f32 / m as f32, j as f32 / m as f32);
-                    v.push(t[0] + (t[1] - t[0]) * a + (t[2] - t[0]) * b);
-                }
-            }
-        }
-    }
-    v.sort_by(|a, b| (a.x, a.z, a.y).partial_cmp(&(b.x, b.z, b.y)).unwrap_or(std::cmp::Ordering::Equal));
-    v.dedup_by(|a, b| (*a - *b).length() < 1e-4);
-    if v.len() > 4 * FEET {
-        let k = v.len() as f32 / (4 * FEET) as f32;
-        v = (0..4 * FEET).map(|i| v[(i as f32 * k) as usize]).collect();
-    }
-    v
-}
-
-/// Whether a part is a wall or a piece of one: thin, wide and high.
-fn wall(p: &Part) -> bool {
-    let e = p.hi - p.lo;
-    e.y >= WALL_TALL && e.x.min(e.z) <= WALL_THICK && e.x.max(e.z) >= WALL_WIDE
-}
-
-/// A wall's face area, for which of two is set into the other.
-fn face(p: &Part) -> f32 {
-    let e = p.hi - p.lo;
-    e.y * e.x.max(e.z)
-}
-
 /// The wall each part is set into (a sill in the wall under it; a window, itself a wall's piece, in a bigger one), if
 /// any: its box passes more than 3 mm into the wall's thickness. What's set into a wall and the wall are mounted on each
 /// other, and neither is sunk into the other.
@@ -185,7 +137,7 @@ fn rest_of(parts: &[Part], grid: &Grid, insets: &[Option<usize>], i: usize) -> R
     let height = p.hi.y - p.lo.y;
     // how far above a foot a surface may be and still be the one it stands in (sunk): half its height, at most NEAR
     let up = (0.5 * height).min(NEAR);
-    let feet = feet(p);
+    let feet = feet(p, FEET);
     // each foot: the highest surface of another part from `up` above it down
     let mut best: Option<(f32, usize, u32, Vec3)> = None;
     let mut nearest_below: Option<(usize, u32, f32)> = None;
