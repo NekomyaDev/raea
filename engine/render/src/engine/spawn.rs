@@ -182,7 +182,13 @@ pub fn remove_rows_from(world: &mut World, rows: &[(String, String)]) -> Result<
 /// by `cols.id`: left as the scene opened, a pass read another row from the first drop on and kept the uniforms it
 /// opened with for the rest of a video (11-25: MALL RAT's exposure stood still, its daylight blown out).
 fn name_rows(world: &mut World) {
-    let (kinds, ids): (Vec<String>, Vec<String>) = store::rows(world).iter().filter_map(|&e| store::key(world, e)).map(|k| (k.kind.clone(), k.id.clone())).unzip();
+    let (mut kinds, mut ids) = (Vec::<String>::new(), Vec::<String>::new());
+    for &e in store::rows(world).iter() {
+        if let Some(k) = store::key(world, e) {
+            kinds.push(k.kind.clone());
+            ids.push(k.id.clone());
+        }
+    }
     let mut fr = world.resource_mut::<FrameRows>();
     (fr.cols.kind, fr.cols.id) = (kinds.into(), ids.into());
 }
