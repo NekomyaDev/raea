@@ -55,6 +55,7 @@ raea-core-ask = "core"
 raea-sys-k = "systems"
 raea-sys-mix = "systems"
 raea-sys-mix-level = "systems"
+raea-sys-mix-device = "systems"
 raea-sys-tone = "systems"
 raea-seedling = "systems"
 raea-sys-ml = "systems"
@@ -295,6 +296,8 @@ raea-sys-rt = true
 raea-sys-mix = true
 # the mix before the master: dialogue at one level, room tone at the joins (the mix masters what it gives)
 raea-sys-mix-level = true
+# the mixer's output: the device stream live play runs in, followed when the system's output changes
+raea-sys-mix-device = true
 raea-sys-tone = true
 raea-sys-ml = true
 raea-sys-mlx = true

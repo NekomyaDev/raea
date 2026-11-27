@@ -12,14 +12,8 @@ use std::time::{Duration, Instant, SystemTime};
 use raea_core_brief::goal::Goal;
 use serde_json::{Value, json};
 
-/// One gate as `raea make status` lists it: its name, the rule it's about, whether it's clear, what it says.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Gate {
-    pub name: &'static str,
-    pub of: Option<String>,
-    pub clear: bool,
-    pub says: String,
-}
+/// One gate as `raea make status` lists it (a cut's are the same kind): `of` is the rule it's about
+pub use raea_core_brief::make::Gate;
 
 fn gate(name: &'static str, of: &str, clear: bool, says: String) -> Gate {
     Gate { name, of: Some(of.to_string()), clear, says }

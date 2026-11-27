@@ -16436,9 +16436,20 @@ dependencies = [
  "raea-io-home",
  "raea-io-media",
  "raea-io-trace",
+ "raea-sys-mix-device",
  "raea-sys-mix-level",
  "raea-sys-tone",
  "serde_json",
+]
+
+[[package]]
+name = "raea-sys-mix-device"
+version = "0.1.0"
+dependencies = [
+ "audioadapter-buffers",
+ "cpal 0.15.3",
+ "firewheel",
+ "raea-io-trace",
 ]
 
 [[package]]

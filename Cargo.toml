@@ -86,6 +86,7 @@ members = [
     "systems/tone",
     "systems/mix",
     "systems/mix/level",
+    "systems/mix/device",
     "systems/ml",
     "systems/mlx",
     "systems/kimodo",

@@ -7,16 +7,15 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
-use audioadapter_buffers::direct::InterleavedSlice;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use firewheel::backend::BackendProcessInfo;
+use cpal::traits::StreamTrait;
 use firewheel::clock::{EventInstant, InstantSamples};
-use firewheel::node::{NodeID, StreamStatus};
-use firewheel::{ActivateInfo, FirewheelConfig, FirewheelContext};
+use firewheel::node::NodeID;
+use firewheel::{FirewheelConfig, FirewheelContext};
+use raea_sys_mix_device::Output;
 
 use crate::nodes::{Stats, event};
 use raea_io_media::pcm::Pcm;
@@ -36,13 +35,8 @@ pub struct Live {
     cx: FirewheelContext,
     /// the device's stream: None for the moment it's reopened on another device (follow_device)
     _stream: Option<cpal::Stream>,
-    /// the output it plays on (its name), the block size it was asked for, and whether cpal said the stream broke
-    /// (the device unplugged, its AirPods put away): the stage follows the system's output (11-26, Shane: "sometimes i
-    /// dont hear any sound": the stream stayed on the device it opened on, gone or not the one being listened to)
-    device: String,
-    block: u32,
-    lost: Arc<AtomicBool>,
-    looked: std::time::Instant,
+    /// the output it plays on, followed when the system's output changes (raea-sys-mix-device)
+    out: Output,
     voices: NodeID,
     master: NodeID,
     score: Option<Score>,
@@ -93,8 +87,7 @@ impl Live {
         let mut cx = FirewheelContext::new(FirewheelConfig::default());
         let (voices, master) = crate::graph(&mut cx, stats.clone(), tap.as_ref().map(|t| t.1.clone()), mute)?;
         let block = std::env::var("RAEA_AUDIO_BLOCK").ok().and_then(|v| v.parse().ok()).unwrap_or(256u32);
-        let lost = Arc::new(AtomicBool::new(false));
-        let (stream, rate, device) = start(&mut cx, block, lost.clone())?;
+        let (out, stream, rate) = Output::open(&mut cx, RATE, block)?;
         if rate != RATE {
             eprintln!("raea mixer: the device runs at {rate} Hz, not {RATE}: live play can't be the bounce sample for sample");
         }
@@ -106,7 +99,7 @@ impl Live {
         // a device opened beside the edit's open waits for nothing by then
         Ok(Live {
             opened: std::time::Instant::now(),
-            settled: false, cx, _stream: Some(stream), device, block, lost, looked: std::time::Instant::now(), voices, master, score: None, pcm: HashMap::new(), opening: HashMap::new(), loader: raea_io_media::pcm::loader(), rate, head, head_base: head, origin: None, drift_ms: Vec::new(), anchors: Vec::new(), slews: 0, load_ms: Vec::new(), load_wait: std::time::Duration::from_millis(std::env::var("RAEA_AUDIO_LOAD_WAIT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(80)), used: HashMap::new(), items: Vec::new(), keep: HashMap::new(), blocks: Vec::new(), master_set: (0.0, 20.0 * (crate::nodes::CEILING as f64).log10()), bypass: false, resting: false, built: Default::default(), stats, tap })
+            settled: false, cx, _stream: Some(stream), out, voices, master, score: None, pcm: HashMap::new(), opening: HashMap::new(), loader: raea_io_media::pcm::loader(), rate, head, head_base: head, origin: None, drift_ms: Vec::new(), anchors: Vec::new(), slews: 0, load_ms: Vec::new(), load_wait: std::time::Duration::from_millis(std::env::var("RAEA_AUDIO_LOAD_WAIT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(80)), used: HashMap::new(), items: Vec::new(), keep: HashMap::new(), blocks: Vec::new(), master_set: (0.0, 20.0 * (crate::nodes::CEILING as f64).log10()), bypass: false, resting: false, built: Default::default(), stats, tap })
     }
 
     /// The master: `gain_db` on the sum, then the limiter at `ceiling_db` (dBTP).
@@ -359,48 +352,22 @@ impl Live {
     /// old one is let go, which hands the graph back (its processor dropped), and it starts again on the new device. The
     /// timeline is placed again on the next frame, as after a rest.
     fn follow_device(&mut self) {
-        let lost = self.lost.load(Ordering::Relaxed);
-        if !lost && self.looked.elapsed() < std::time::Duration::from_secs(1) {
+        if !self.out.moved() {
             return;
         }
-        self.looked = std::time::Instant::now();
-        let now = cpal::default_host().default_output_device().and_then(|d| d.name().ok()).unwrap_or_default();
-        if !lost && (now.is_empty() || now == self.device) {
-            return;
+        let Ok((stream, rate)) = self.out.reopen(&mut self.cx, self._stream.take()) else { return };
+        if rate != self.rate {
+            // the head and the score count samples: both at the new device's rate
+            self.head_base = (self.head_base as f64 * rate as f64 / self.rate as f64).round() as i64;
+            self.rate = rate;
+            self.score = None;
         }
-        // the old stream and its callback go, and the processor in it: the context is free to start again
-        self._stream = None;
-        let t0 = std::time::Instant::now();
-        while self.cx.is_active() && t0.elapsed() < std::time::Duration::from_millis(500) {
-            let _ = self.cx.update();
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        self.lost.store(false, Ordering::Relaxed);
-        match start(&mut self.cx, self.block, self.lost.clone()) {
-            Ok((stream, rate, device)) => {
-                eprintln!("raea mixer: sound now on {device} (was {})", if self.device.is_empty() { "nothing" } else { &self.device });
-                if rate != self.rate {
-                    // the head and the score count samples: both at the new device's rate
-                    self.head_base = (self.head_base as f64 * rate as f64 / self.rate as f64).round() as i64;
-                    self.rate = rate;
-                    self.score = None;
-                }
-                self._stream = Some(stream);
-                self.device = device;
-                self.resting = false;
-                self.origin = None;
-                self.settled = false;
-                self.opened = std::time::Instant::now();
-                let _ = self.cx.update();
-            }
-            // no device to play on (none plugged in): looked for again in a second
-            Err(e) => {
-                if !self.device.is_empty() {
-                    eprintln!("raea mixer: no sound: {e}");
-                }
-                self.device.clear();
-            }
-        }
+        self._stream = Some(stream);
+        self.resting = false;
+        self.origin = None;
+        self.settled = false;
+        self.opened = std::time::Instant::now();
+        let _ = self.cx.update();
     }
 
     /// The device stream stopped (after stop_all and its fade-outs: nothing is heard): no callback runs, so neither the
@@ -463,64 +430,6 @@ impl Live {
             self.load_ms.iter().cloned().fold(0.0, f64::max)
         )
     }
-}
-
-/// The default output device, at 48 kHz when it takes it, `block` frames a callback when it takes that: Firewheel's
-/// processor pulled from cpal's callback, as the bounce pulls it into a buffer (stereo, spread over the device's
-/// channels).
-fn start(cx: &mut FirewheelContext, block: u32, lost: Arc<AtomicBool>) -> Result<(cpal::Stream, u32, String), String> {
-    let host = cpal::default_host();
-    let dev = host.default_output_device().ok_or("no audio output device")?;
-    let name = dev.name().unwrap_or_default();
-    let def = dev.default_output_config().map_err(|e| format!("audio output: {e}"))?;
-    let channels = def.channels();
-    let takes_48k = dev.supported_output_configs().map(|mut c| c.any(|r| r.channels() == channels && r.sample_format() == cpal::SampleFormat::F32 && r.min_sample_rate().0 <= RATE && r.max_sample_rate().0 >= RATE)).unwrap_or(false);
-    let rate = if takes_48k { RATE } else { def.sample_rate().0 };
-    let max_block = 8192usize;
-    let mut proc = cx
-        .activate(ActivateInfo { sample_rate: std::num::NonZeroU32::new(rate).unwrap(), max_block_frames: std::num::NonZeroU32::new(max_block as u32).unwrap(), num_stream_in_channels: 0, num_stream_out_channels: 2, input_to_output_latency_seconds: 0.0 })
-        .map_err(|e| format!("the mixer's graph: {e:?}"))?;
-    let ch = channels as usize;
-    let began = std::time::Instant::now();
-    let mut stereo = vec![0f32; max_block * 2];
-    let empty: [f32; 0] = [];
-    let mut callback = move |out: &mut [f32], info: &cpal::OutputCallbackInfo| {
-        let ts = info.timestamp();
-        let delay = ts.playback.duration_since(&ts.callback);
-        let frames = out.len() / ch.max(1);
-        let mut done = 0;
-        while done < frames {
-            let k = (frames - done).min(max_block);
-            let pi = BackendProcessInfo { frames: k, process_timestamp: Some(std::time::Instant::now()), duration_since_stream_start: began.elapsed(), input_stream_status: StreamStatus::empty(), output_stream_status: StreamStatus::empty(), dropped_frames: 0, process_to_playback_delay: delay };
-            if let (Ok(input), Ok(mut output)) = (InterleavedSlice::new(&empty[..], 0, 0), InterleavedSlice::new_mut(&mut stereo[..k * 2], 2, k)) {
-                proc.process(&input, &mut output, pi);
-            }
-            for i in 0..k {
-                let (l, r) = (stereo[2 * i], stereo[2 * i + 1]);
-                let o = &mut out[(done + i) * ch..(done + i + 1) * ch];
-                match ch {
-                    1 => o[0] = 0.5 * (l + r),
-                    _ => {
-                        o[0] = l;
-                        o[1] = r;
-                        o[2..].fill(0.0);
-                    }
-                }
-            }
-            done += k;
-        }
-    };
-    // the block size when the device's range takes it, else its own
-    let fits = dev.supported_output_configs().map(|mut c| c.any(|r| r.channels() == channels && matches!(r.buffer_size(), cpal::SupportedBufferSize::Range { min, max } if *min <= block && block <= *max))).unwrap_or(false);
-    let config = cpal::StreamConfig { channels, sample_rate: cpal::SampleRate(rate), buffer_size: if fits { cpal::BufferSize::Fixed(block) } else { cpal::BufferSize::Default } };
-    let mut said = raea_io_trace::once::said_once::<cpal::StreamError>("raea mixer");
-    let broke = move |e: cpal::StreamError| {
-        lost.store(true, Ordering::Relaxed);
-        said(e)
-    };
-    let stream = dev.build_output_stream(&config, move |o: &mut [f32], i: &cpal::OutputCallbackInfo| callback(o, i), broke, None).map_err(|e| format!("audio stream: {e}"))?;
-    stream.play().map_err(|e| format!("audio stream: {e}"))?;
-    Ok((stream, rate, name))
 }
 
 impl Drop for Live {

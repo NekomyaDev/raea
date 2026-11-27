@@ -1,8 +1,7 @@
 //! Whether a job is done (docs/make.feature MK1), from what's on disk and nothing the agent says: the deliverables, the
 //! notes, the record of renders and checks, and the judge's rounds. Pure over a `Job` so it is tested on fixtures.
 
-use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::{path::{Path, PathBuf}, time::SystemTime};
 
 use raea_core_brief::make::{self, Make};
 use raea_core_facts::{Level, record::Entry};
@@ -188,10 +187,11 @@ pub fn status(job: &Job) -> Value {
     }
     let mut gates = checks(job);
     gates.extend(lods(job, &notes));
+    // a cut job: its brief's rules over every delivered file (MK25-MK27), and the person's review its critic; a goal's
+    let plan = |g: make::Gate| gate(g.name, g.of.as_deref(), g.clear, g.says);
     match (&job.make.cut, job.make.kind) {
-        // a cut job: its brief's rules over every delivered file (MK25-MK27), and the person's review its critic
-        (Some(c), make::Kind::Cut) => gates.extend(raea_runtime_cut_plan::gates(c, job.dir).into_iter().map(|g| gate(g.name, g.of.as_deref(), g.clear, g.says))),
-        (_, make::Kind::Goal) => gates.extend(job.make.goal.iter().flat_map(|g| raea_runtime_goal_plan::gates(g, job.dir)).map(|g| gate(g.name, g.of.as_deref(), g.clear, g.says))),
+        (Some(c), make::Kind::Cut) => gates.extend(raea_runtime_cut_plan::gates(c, job.dir).into_iter().map(plan)),
+        (_, make::Kind::Goal) => gates.extend(job.make.goal.iter().flat_map(|g| raea_runtime_goal_plan::gates(g, job.dir)).map(plan)),
         _ => gates.extend(critic(job, newest, &notes)),
     }
     let (asks, said) = crate::asked::gates(&sheets(job), job.ledger, &notes);

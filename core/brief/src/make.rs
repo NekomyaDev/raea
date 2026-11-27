@@ -318,3 +318,13 @@ pub fn doctor(m: &Make) -> Vec<String> {
     }
     out
 }
+
+/// One gate as `raea make status` lists it: its name, the file, item or rule it's about, whether it's clear, and what
+/// it says. A cut's gates come from raea-runtime-cut-plan, a goal's from raea-runtime-goal-plan.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Gate {
+    pub name: &'static str,
+    pub of: Option<String>,
+    pub clear: bool,
+    pub says: String,
+}

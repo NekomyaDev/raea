@@ -10,14 +10,8 @@ use std::path::Path;
 use raea_core_brief::cut::{self, Cut, norm};
 use serde_json::Value;
 
-/// One gate as `raea make status` lists it: its name, the file or item it's about, whether it's clear, what it says.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Gate {
-    pub name: &'static str,
-    pub of: Option<String>,
-    pub clear: bool,
-    pub says: String,
-}
+/// One gate as `raea make status` lists it (a goal's are the same kind)
+pub use raea_core_brief::make::Gate;
 
 fn gate(name: &'static str, of: Option<&str>, clear: bool, says: String) -> Gate {
     Gate { name, of: of.map(str::to_string), clear, says }
@@ -192,7 +186,10 @@ fn file_gates(c: &Cut, plan: &cut::CutPlan, format: &str, f: &Path, rel: &str, s
                     in_order(&want, &j.iter().map(|(w, _)| w.as_str()).collect::<Vec<_>>())
                 };
                 let lines: Vec<&str> = std::iter::once(cta.text.as_str()).chain(cta.also.iter().map(String::as_str)).collect();
-                let (best, heard_share) = lines.iter().map(|l| (*l, share(l, &last))).fold(("", 0.0), |a, b| if b.1 > a.1 { b } else { a });
+                // the line heard most, the first of equals (none when no line's words were heard)
+                let heard: Vec<_> = lines.iter().map(|l| share(l, &last)).collect();
+                let heard_share = heard.iter().copied().fold(0.0, f64::max);
+                let best = lines.iter().zip(&heard).find(|(_, h)| heard_share > 0.0 && **h == heard_share).map_or("", |(l, _)| *l);
                 let on_screen = screen.iter().any(|(s, at)| *at >= end - within && lines.iter().any(|l| share(l, &s.split(' ').collect::<Vec<_>>()) >= CTA_SHARE));
                 let ok = heard_share >= CTA_SHARE || on_screen;
                 let says = match (ok, on_screen) {

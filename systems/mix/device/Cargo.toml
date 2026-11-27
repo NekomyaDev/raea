@@ -1,0 +1,16 @@
+[package]
+name = "raea-sys-mix-device"
+version = "0.1.0"
+edition = "2024"
+license = "FSL-1.1-ALv2"
+publish = false
+description = "raea's mixer on the system's output: Firewheel's processor driven from cpal's callback, and moved onto the device in use when the output changes or the stream breaks"
+
+[dependencies]
+raea-io-trace = { path = "../../../io/trace" }
+# the mixer's graph, as raea-sys-mix pins it
+firewheel = { version = "=0.12.1", default-features = false, features = ["std", "scheduled_events"] }
+# the cpal react and the legacy app use (0.15): Firewheel's own CPAL backend needs 0.18, which can't link beside 0.15
+cpal = "0.15"
+# the processor's output, pulled into a stereo buffer
+audioadapter-buffers = { version = "4.0.0", default-features = false, features = ["std"] }
