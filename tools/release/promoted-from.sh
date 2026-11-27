@@ -18,9 +18,12 @@ die() { echo "promoted-from: $*" >&2; exit 1; }
 # tests include tools/release.sh and an sdk/guides page, and tests aren't in a release build). The skills (skills/, the
 # raea-skills pin) and docs/ are read by no build either (11-11, Shane: "promote skills to the latest possible"):
 # release.sh packs the skills the release's commit pins, and the skills gate (its skills-passed line) and check-cli
-# hold them to the candidate's binaries, so newer skills go out on a candidate's binaries
+# hold them to the candidate's binaries, so newer skills go out on a candidate's binaries. The layers gate's files
+# (tools/layers.sh and its layers.toml) are read by CI's check of the crate graph only (11-26: 0.1.11-rc2's commit failed
+# CI on a crate with no layer, and the one-line fix would have forced a rebuild)
 SAME=(':(exclude)README.md' ':(exclude).github' ':(exclude)tools/release.sh' ':(exclude)tools/release-check.sh' ':(exclude)tools/release-appimage.sh'
-  ':(exclude)tools/release' ':(exclude)tools/agents' ':(exclude)tools/raea-app' ':(exclude)skills' ':(exclude)docs')
+  ':(exclude)tools/release' ':(exclude)tools/agents' ':(exclude)tools/raea-app' ':(exclude)skills' ':(exclude)docs'
+  ':(exclude)tools/layers.sh' ':(exclude)tools/layers.toml' ':(exclude)tools/layers.allow')
 
 fetch_tag() { git cat-file -e "refs/tags/$1" 2>/dev/null || git fetch -q --depth=1 origin "refs/tags/$1:refs/tags/$1"; }
 differ() { git diff --name-only "$1^{commit}" "$2^{commit}" -- . "${SAME[@]}"; }
